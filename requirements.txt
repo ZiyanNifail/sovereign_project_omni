@@ -1,0 +1,43 @@
+# SOVEREIGN OS — Python Dependencies
+# Run setup.bat instead of installing this directly — it handles system deps too.
+
+# ── AI ────────────────────────────────────────────────────────────────────────
+groq==0.37.1
+google-genai==1.73.1
+anthropic==0.96.0              # optional — only needed if you have an Anthropic key
+
+# ── Voice ─────────────────────────────────────────────────────────────────────
+openai-whisper==20250625
+kokoro-onnx==0.4.7
+sounddevice==0.5.1
+soundfile==0.12.1
+pyttsx3==2.98                  # TTS fallback (no model download needed)
+
+# ── Vision & Screen ───────────────────────────────────────────────────────────
+pyautogui==0.9.54
+Pillow==11.0.0
+pytesseract==0.3.13
+# Tesseract binary installed by setup.bat via winget
+
+# ── Memory ────────────────────────────────────────────────────────────────────
+chromadb==0.5.23
+sentence-transformers==3.3.1
+
+# ── Face Recognition ──────────────────────────────────────────────────────────
+# dlib and face-recognition are installed separately by setup.bat
+# (requires MSVC compiler — cannot be pip installed on a clean machine)
+
+# ── Browser Automation ────────────────────────────────────────────────────────
+playwright==1.49.0
+
+# ── Web & Search ──────────────────────────────────────────────────────────────
+beautifulsoup4==4.12.3
+requests==2.32.3
+duckduckgo-search==7.0.0
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+websockets==14.1
+python-dotenv==1.0.1
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+numpy==2.1.3
