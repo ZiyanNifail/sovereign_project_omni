@@ -126,6 +126,50 @@ class Eyes:
             return result.description
         return result.raw_text or "Nothing visible on screen."
 
+    # ── Text Locator ──────────────────────────────────────────────────────────
+
+    def find_text(self, text: str) -> Optional[Tuple[int, int]]:
+        """
+        Find text on the live screen using OCR.
+        Returns (x, y) screen coordinates of the text centre, or None if not found.
+        Matches are case-insensitive and substring-based (finds 'Miera' inside a line).
+        """
+        try:
+            from collections import defaultdict
+            screenshot = pyautogui.screenshot()
+            data = pytesseract.image_to_data(
+                screenshot, lang=OCR_LANGUAGE, output_type=pytesseract.Output.DICT
+            )
+            search = text.lower().strip()
+            n = len(data["text"])
+
+            # Group words into lines by (block, paragraph, line) key
+            lines: dict = defaultdict(list)
+            for i in range(n):
+                word = data["text"][i].strip()
+                if not word or int(data["conf"][i]) < 25:
+                    continue
+                key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+                lines[key].append(i)
+
+            for idxs in lines.values():
+                line_text = " ".join(data["text"][i] for i in idxs).lower()
+                if search in line_text:
+                    lefts  = [data["left"][i]                    for i in idxs]
+                    tops   = [data["top"][i]                     for i in idxs]
+                    rights = [data["left"][i] + data["width"][i] for i in idxs]
+                    bots   = [data["top"][i] + data["height"][i] for i in idxs]
+                    x = (min(lefts) + max(rights)) // 2
+                    y = (min(tops)  + max(bots))   // 2
+                    logger.debug(f"find_text: '{text}' found at ({x}, {y})")
+                    return (x, y)
+
+            logger.warning(f"find_text: '{text}' not found on screen")
+            return None
+        except Exception as e:
+            logger.error(f"find_text failed: {e}")
+            return None
+
 
 # ── Standalone test ───────────────────────────────────────────────────────────
 if __name__ == "__main__":

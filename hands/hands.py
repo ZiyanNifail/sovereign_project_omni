@@ -23,25 +23,40 @@ PLANNER_PROMPT = """You are an action planner for a computer control system.
 Convert the user's instruction into a precise list of computer actions.
 
 Available actions:
-- navigate: open a URL in the default browser. Use this for ANY website request. target = full URL.
-- open: open a desktop application by name (e.g. Notepad, Calculator, Spotify). NOT for websites.
-- click: click at coordinates "x,y"
-- type: type text (value = text to type)
-- hotkey: press key combination e.g. "ctrl+c"
-- scroll: scroll "up" or "down"
-- wait: wait N seconds (value = seconds)
-- double_click: double click at coordinates
-- right_click: right click at coordinates
+- navigate: open a URL in the default browser. target = full URL. Use for ALL websites.
+- open: open a desktop application by name (e.g. Notepad, Spotify). NOT for websites.
+- click_text: find text on screen using OCR and click it. target = exact visible text to find.
+              Use for contact names, buttons, menu items, links — anything visible as text on screen.
+- click: click at exact coordinates. target = "x,y". Only use when you know exact coords.
+- type: type text. value = text. Handles Unicode, emoji, any language safely.
+- hotkey: press key combination. target = e.g. "ctrl+c", "enter", "ctrl+v".
+- scroll: scroll the page. target = "up" or "down". value = number of clicks.
+- wait: pause. value = seconds (e.g. "3").
+- double_click: double click. target = "x,y" or text.
+- right_click: right click. target = "x,y".
 
 Rules:
-- For websites and URLs, ALWAYS use navigate, never open.
-- For desktop apps, use open.
-- Keep steps minimal and direct.
+- Websites → navigate. Desktop apps → open. Visible UI elements → click_text.
+- Always wait after navigate (at least 3s) so the page loads before clicking.
+- For WhatsApp: use the search box to find contacts — don't assume they're visible.
+- Keep steps minimal.
 
 Examples:
 "open youtube" → [{{"action": "navigate", "target": "https://youtube.com"}}]
-"open notepad" → [{{"action": "open", "target": "notepad"}}]
 "open notepad and type hello" → [{{"action": "open", "target": "notepad"}}, {{"action": "wait", "value": "1.5"}}, {{"action": "type", "value": "hello"}}]
+"send hey to Miera on WhatsApp" → [
+  {{"action": "navigate", "target": "https://web.whatsapp.com"}},
+  {{"action": "wait", "value": "5"}},
+  {{"action": "click_text", "target": "Search or start new chat"}},
+  {{"action": "type", "value": "Miera"}},
+  {{"action": "wait", "value": "2"}},
+  {{"action": "click_text", "target": "Miera"}},
+  {{"action": "wait", "value": "1"}},
+  {{"action": "type", "value": "hey"}},
+  {{"action": "hotkey", "target": "enter"}}
+]
+"click the submit button" → [{{"action": "click_text", "target": "Submit"}}]
+"click on the settings icon" → [{{"action": "click_text", "target": "Settings"}}]
 
 Return ONLY a valid JSON array of steps, no markdown, no explanation.
 
@@ -53,7 +68,15 @@ Current screen context: {screen_context}
 class Hands:
     def __init__(self):
         self.groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+        self._eyes = None  # lazy — loaded only when click_text is first used
         logger.info("Hands initialized")
+
+    def _get_eyes(self):
+        """Lazy-load Eyes to avoid circular import on startup."""
+        if self._eyes is None:
+            from vision.eyes import Eyes
+            self._eyes = Eyes()
+        return self._eyes
 
     # ── Action Planner ────────────────────────────────────────────────────────
 
@@ -119,18 +142,42 @@ class Hands:
                     subprocess.Popen(["xdg-open", target])
                 logger.debug(f"Opened: {target}")
 
+            elif step.action == "click_text":
+                # OCR-based click: find text on screen then click its coordinates
+                target_text = step.target or step.value or ""
+                coords = self._get_eyes().find_text(target_text)
+                if coords:
+                    pyautogui.click(coords[0], coords[1])
+                    logger.debug(f"click_text: '{target_text}' at {coords}")
+                else:
+                    logger.warning(f"click_text: '{target_text}' not found on screen")
+                    return False
+
             elif step.action == "click":
                 if step.target and "," in step.target:
                     x, y = map(int, step.target.split(","))
                     pyautogui.click(x, y)
                 else:
-                    # Try to find text on screen and click it
-                    pyautogui.click()
+                    # Fall back to click_text if target looks like a label
+                    if step.target:
+                        coords = self._get_eyes().find_text(step.target)
+                        if coords:
+                            pyautogui.click(coords[0], coords[1])
+                        else:
+                            return False
                 logger.debug(f"Clicked: {step.target}")
 
             elif step.action == "type":
-                pyautogui.write(step.value or "", interval=0.03)
-                logger.debug(f"Typed: {step.value}")
+                text_to_type = step.value or ""
+                # Use clipboard paste for reliable Unicode support (emoji, Malay, etc.)
+                try:
+                    import pyperclip
+                    pyperclip.copy(text_to_type)
+                    pyautogui.hotkey("ctrl", "v")
+                except ImportError:
+                    # pyperclip not installed — fall back to write() for ASCII
+                    pyautogui.write(text_to_type, interval=0.03)
+                logger.debug(f"Typed: {text_to_type}")
 
             elif step.action == "hotkey":
                 keys = (step.target or "").split("+")
@@ -233,9 +280,14 @@ class Hands:
 
 # ── Standalone test ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.DEBUG)
     hands = Hands()
-    # Test planning only (no execution in test)
-    steps = hands.plan("Open Notepad and type Hello World")
-    for s in steps:
+    print("=== Test 1: Open YouTube ===")
+    for s in hands.plan("open youtube"):
+        print(f"  {s.action}: target={s.target}, value={s.value}")
+    print()
+    print("=== Test 2: WhatsApp message ===")
+    for s in hands.plan('send "Hey, are you free?" to Miera on WhatsApp'):
         print(f"  {s.action}: target={s.target}, value={s.value}")
