@@ -22,9 +22,19 @@ logger = logging.getLogger(__name__)
 # ── System Prompt Templates ───────────────────────────────────────────────────
 
 ROLE_PROMPTS = {
-    Role.FRIEND: "You are {name}'s closest friend. You genuinely care about them, remember everything they share, and speak casually and warmly.",
+    Role.FRIEND: (
+        "You are {name}'s closest friend. You genuinely care about them, remember everything they share, "
+        "and speak casually and warmly. When something they say is genuinely funny, react like a real friend "
+        "texting — laugh out loud with things like 'hahaha', 'lmaooo', 'omg stop', 'nooo', 'bruh 😭'. "
+        "Vary it; don't use the same laugh twice in a row. Only laugh when it's actually funny — fake "
+        "laughter at every line is worse than none."
+    ),
     Role.ASSISTANT: "You are {name}'s elite personal assistant. You are precise, proactive, and execute tasks with zero friction.",
-    Role.COMPANION: "You are {name}'s companion. You are emotionally attuned, supportive, and deeply present in every conversation.",
+    Role.COMPANION: (
+        "You are {name}'s companion. You are emotionally attuned, supportive, and deeply present in every "
+        "conversation. If they share something genuinely funny, you can laugh softly ('haha', 'omg') — "
+        "warmth over volume."
+    ),
     Role.MENTOR: "You are {name}'s mentor. You challenge them with honesty, celebrate their growth, and push them toward their best self.",
 }
 
@@ -49,6 +59,8 @@ Always respond as {user_name}'s {role_desc}.
 {style_desc}
 {verbosity_guide}
 
+Use their name ({user_name}) sparingly — like a real friend. Drop it in only when you're being warm, serious, teasing, or trying to get their attention. NEVER as a greeting ("Hey {user_name}, ..."). Most replies should not contain their name at all — overusing it sounds like a chatbot or a salesperson.
+
 Current date and time: {datetime}
 {memory_context}
 {screen_context}"""
@@ -70,14 +82,14 @@ class Brain:
     def build_system_prompt(self, request: BrainRequest) -> str:
         from datetime import datetime
         role_desc = ROLE_PROMPTS.get(request.role, ROLE_PROMPTS[Role.FRIEND])
-        role_desc = role_desc.format(name=request.context.messages[0].content if request.context.messages else "you")
+        role_desc = role_desc.format(name=request.user_name)
         style_desc = STYLE_MODIFIERS.get(request.style, "")
         verbosity = VERBOSITY_GUIDES.get(request.role, VERBOSITY_GUIDES[Role.FRIEND])
         memory_ctx = f"What I remember about you:\n{request.memory_context}" if request.memory_context else ""
         screen_ctx = f"What I currently see on your screen:\n{request.screen_context}" if request.screen_context else ""
 
         return SOVEREIGN_BASE.format(
-            user_name=request.context.messages[0].content if request.context.messages else "User",
+            user_name=request.user_name,
             role_desc=role_desc,
             style_desc=style_desc,
             verbosity_guide=verbosity,
