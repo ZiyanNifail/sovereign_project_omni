@@ -7,17 +7,20 @@ from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
 
+import os
 import pyautogui
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 from PIL import Image
 import anthropic
 
 from shared.types import ScreenResult
 from shared.config import (
     SCREENSHOTS_DIR, SCREENSHOT_FORMAT, OCR_LANGUAGE,
-    VISION_FALLBACK_THRESHOLD, ANTHROPIC_API_KEY, MODEL_COMPLEX
+    VISION_FALLBACK_THRESHOLD, ANTHROPIC_API_KEY, MODEL_COMPLEX, TESSERACT_PATH
 )
+
+if TESSERACT_PATH and os.path.exists(TESSERACT_PATH):
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
 logger = logging.getLogger(__name__)
 

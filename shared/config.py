@@ -43,12 +43,14 @@ CONTEXT_SUMMARY_THRESHOLD = 20  # summarize after N messages
 # ── Voice ─────────────────────────────────────────────────────────────────────
 WHISPER_MODEL = "base"          # base=fast, small=better, medium=best
 TTS_SPEED = 1.0
-DEFAULT_VOICE = "af_heart"      # Kokoro default voice
+DEFAULT_VOICE = "am_adam"       # Kokoro male voice (am_adam / am_michael / bm_george)
 
 # ── Vision ────────────────────────────────────────────────────────────────────
 SCREENSHOT_FORMAT = "PNG"
 OCR_LANGUAGE = "eng"
 VISION_FALLBACK_THRESHOLD = 0.3  # use vision AI if OCR confidence < 30%
+# Override via TESSERACT_PATH env var if Tesseract is installed elsewhere
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 # ── Screen Control ────────────────────────────────────────────────────────────
 PYAUTOGUI_PAUSE = 0.3           # pause between actions (seconds)

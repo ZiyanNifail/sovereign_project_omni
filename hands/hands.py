@@ -23,17 +23,27 @@ PLANNER_PROMPT = """You are an action planner for a computer control system.
 Convert the user's instruction into a precise list of computer actions.
 
 Available actions:
-- open: open an application by name
-- click: click at coordinates "x,y" or descriptive target
-- type: type text
+- navigate: open a URL in the default browser. Use this for ANY website request. target = full URL.
+- open: open a desktop application by name (e.g. Notepad, Calculator, Spotify). NOT for websites.
+- click: click at coordinates "x,y"
+- type: type text (value = text to type)
 - hotkey: press key combination e.g. "ctrl+c"
 - scroll: scroll "up" or "down"
-- wait: wait N seconds
+- wait: wait N seconds (value = seconds)
 - double_click: double click at coordinates
 - right_click: right click at coordinates
 
-Return ONLY a valid JSON array of steps, no markdown, no explanation. Example:
-[{{"action": "open", "target": "Chrome"}}, {{"action": "wait", "value": "2"}}, {{"action": "hotkey", "target": "ctrl+l"}}, {{"action": "type", "value": "https://youtube.com"}}, {{"action": "hotkey", "target": "enter"}}]
+Rules:
+- For websites and URLs, ALWAYS use navigate, never open.
+- For desktop apps, use open.
+- Keep steps minimal and direct.
+
+Examples:
+"open youtube" → [{{"action": "navigate", "target": "https://youtube.com"}}]
+"open notepad" → [{{"action": "open", "target": "notepad"}}]
+"open notepad and type hello" → [{{"action": "open", "target": "notepad"}}, {{"action": "wait", "value": "1.5"}}, {{"action": "type", "value": "hello"}}]
+
+Return ONLY a valid JSON array of steps, no markdown, no explanation.
 
 User instruction: {instruction}
 Current screen context: {screen_context}
@@ -90,15 +100,24 @@ class Hands:
     def execute_step(self, step: ActionStep) -> bool:
         """Execute a single action step. Returns True on success."""
         try:
-            if step.action == "open":
+            if step.action == "navigate":
+                import webbrowser
+                url = step.target or step.value or ""
+                if not url.startswith("http"):
+                    url = f"https://{url}"
+                webbrowser.open(url)
+                logger.debug(f"Navigated to: {url}")
+
+            elif step.action == "open":
                 import subprocess, sys
+                target = step.target or ""
                 if sys.platform == "win32":
-                    subprocess.Popen(["start", step.target], shell=True)
+                    subprocess.Popen(f'start "" "{target}"', shell=True)
                 elif sys.platform == "darwin":
-                    subprocess.Popen(["open", "-a", step.target])
+                    subprocess.Popen(["open", "-a", target])
                 else:
-                    subprocess.Popen(["xdg-open", step.target])
-                logger.debug(f"Opened: {step.target}")
+                    subprocess.Popen(["xdg-open", target])
+                logger.debug(f"Opened: {target}")
 
             elif step.action == "click":
                 if step.target and "," in step.target:

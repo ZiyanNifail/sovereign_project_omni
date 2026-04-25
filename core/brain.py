@@ -35,11 +35,19 @@ STYLE_MODIFIERS = {
     PersonalityStyle.CALM: "Be measured, grounded, and steady. You are the eye of any storm.",
 }
 
+VERBOSITY_GUIDES = {
+    Role.ASSISTANT: "Reply in 1-2 sentences. Be direct and skip all preamble. Just do it or say it.",
+    Role.FRIEND: "Keep it casual and short — 1-3 sentences like a text message. No essays.",
+    Role.COMPANION: "Warm but brief. 2-3 sentences max.",
+    Role.MENTOR: "Be clear and efficient. 3-4 sentences max. Lead with the insight.",
+}
+
 SOVEREIGN_BASE = """You are SOVEREIGN — an AI that knows {user_name} deeply.
 You have memory of past conversations, understand their emotional patterns, and adapt to their communication style.
 You can see their screen, control their computer, search the web, and read their messages when asked.
 Always respond as {user_name}'s {role_desc}.
 {style_desc}
+{verbosity_guide}
 
 Current date and time: {datetime}
 {memory_context}
@@ -64,6 +72,7 @@ class Brain:
         role_desc = ROLE_PROMPTS.get(request.role, ROLE_PROMPTS[Role.FRIEND])
         role_desc = role_desc.format(name=request.context.messages[0].content if request.context.messages else "you")
         style_desc = STYLE_MODIFIERS.get(request.style, "")
+        verbosity = VERBOSITY_GUIDES.get(request.role, VERBOSITY_GUIDES[Role.FRIEND])
         memory_ctx = f"What I remember about you:\n{request.memory_context}" if request.memory_context else ""
         screen_ctx = f"What I currently see on your screen:\n{request.screen_context}" if request.screen_context else ""
 
@@ -71,6 +80,7 @@ class Brain:
             user_name=request.context.messages[0].content if request.context.messages else "User",
             role_desc=role_desc,
             style_desc=style_desc,
+            verbosity_guide=verbosity,
             datetime=datetime.now().strftime("%A, %B %d %Y %H:%M"),
             memory_context=memory_ctx,
             screen_context=screen_ctx,
@@ -133,7 +143,7 @@ class Brain:
         text = response.choices[0].message.content
         tokens = response.usage.total_tokens
         logger.debug(f"Groq used {tokens} tokens")
-        return BrainResponse(text=text, model_used=AIModel.GEMINI, tokens_used=tokens, success=True)
+        return BrainResponse(text=text, model_used=AIModel.GROQ, tokens_used=tokens, success=True)
 
     def _call_gemini(self, request: BrainRequest, system: str) -> BrainResponse:
         history = "\n".join([f"{m.role}: {m.content}" for m in request.context.messages[-6:]])

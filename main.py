@@ -37,26 +37,42 @@ class SovereignOS:
         cfg = self.persona.load_config(self.user_name)
         self.active_role = cfg.role
         self.active_style = cfg.style
+        self._voice_loop_active = False
         logger.info(f"Ready — {self.user_name} | {self.active_role.value} | {self.active_style.value}")
 
     def _intent(self, text: str) -> str:
         t = text.lower()
-        if any(w in t for w in [
-            "open ", "launch ", "click ", "type ", "go to ", "navigate", "press ",
-            "close ", "minimize", "maximize", "scroll ", "drag ", "right click",
-            "switch to", "alt tab", "screenshot", "copy ", "paste ", "select all",
-            "download ", "install ", "run ", "start ", "write in", "fill in"
-        ]):
+
+        # Explicit computer-control phrases
+        control_exact = [
+            "launch ", "click on", "click the", "navigate to", "go to the website",
+            "minimize ", "maximize ", "scroll down", "scroll up", "drag and drop",
+            "right click", "alt tab", "alt-tab", "ctrl+", "ctrl-",
+            "take a screenshot", "take screenshot", "download this", "download the",
+            "install this", "install the", "write in the", "fill in the", "fill out",
+            "run this", "run the", "run command", "run script",
+        ]
+        if any(w in t for w in control_exact):
             return "control"
-        if any(w in t for w in ["screen", "what do you see", "look at my", "read my screen", "what's on"]):
+        # "open X" — allow any target except filler words (catches "open youtube", "open chrome", etc.)
+        if re.search(r'\bopen\s+(?!(?:up|about|minded|ended|source|ly|to|for|with|a\b|an\b|the\b))\S+', t):
+            return "control"
+        if re.search(r'\bpress\s+(ctrl|alt|shift|enter|tab|esc|f\d+|backspace|delete|space)\b', t):
+            return "control"
+        if re.search(r'\btype\s+["\']', t) or re.search(r'\btype\s+in\s+the\b', t):
+            return "control"
+
+        if any(w in t for w in ["what do you see", "look at my screen", "read my screen", "what's on my screen", "describe my screen"]):
             return "screen"
         if any(w in t for w in ["whatsapp", "my messages", "my texts", "my chat"]):
             return "whatsapp"
-        if any(w in t for w in ["lms", "class", "assignment", "deadline", "schedule"]):
+        if any(w in t for w in ["lms", "my assignments", "my deadline", "check my class", "my class schedule"]):
             return "lms"
-        if any(w in t for w in ["search", "look up", "google", "what is ", "who is ", "find "]):
+        if any(w in t for w in ["search for", "look up", "google this", "search the web", "find online"]):
             return "search"
-        if any(w in t for w in ["instagram", "this post"]):
+        if re.search(r'\bwhat (is|are|was|were)\b', t) and any(w in t for w in ["search", "look up", "find"]):
+            return "search"
+        if any(w in t for w in ["instagram", "this post", "this ig"]):
             return "instagram"
         return "chat"
 
@@ -204,6 +220,50 @@ class SovereignOS:
                         ok = self.persona.add_face(data.get("image_path", ""), data.get("name", "unknown"))
                         await websocket.send(json.dumps({"type": "ack", "message": f"Face {'added' if ok else 'failed'}"}))
 
+                    elif t == "voice_listen":
+                        # One-shot: record mic → transcribe → process → respond
+                        duration = int(data.get("duration", 5))
+                        await websocket.send(json.dumps({"type": "orb_state", "state": OrbState.LISTENING.value}))
+                        loop = asyncio.get_event_loop()
+                        voice_result = await loop.run_in_executor(None, self.voice.listen, duration)
+                        if voice_result.success and voice_result.transcript.strip():
+                            await websocket.send(json.dumps({
+                                "type": "voice_transcript",
+                                "transcript": voice_result.transcript
+                            }))
+                            await websocket.send(json.dumps({"type": "orb_state", "state": OrbState.THINKING.value}))
+                            resp = await self.process(OrchestratorRequest(
+                                raw_input=voice_result.transcript,
+                                input_mode="voice",
+                                include_screen=data.get("include_screen", False)
+                            ))
+                            await websocket.send(json.dumps({
+                                "type": "response",
+                                "content": resp.text_response,
+                                "orb_state": resp.orb_state.value,
+                                "actions": resp.actions_taken,
+                                "success": resp.success,
+                                "transcript": voice_result.transcript
+                            }))
+                        else:
+                            await websocket.send(json.dumps({
+                                "type": "error",
+                                "message": f"Nothing heard: {voice_result.error or 'empty transcript'}"
+                            }))
+                            await websocket.send(json.dumps({"type": "orb_state", "state": OrbState.IDLE.value}))
+
+                    elif t == "voice_loop_start":
+                        if not self._voice_loop_active:
+                            self._voice_loop_active = True
+                            asyncio.create_task(self._voice_loop(websocket))
+                            await websocket.send(json.dumps({"type": "ack", "message": "Voice loop started — listening continuously"}))
+                        else:
+                            await websocket.send(json.dumps({"type": "ack", "message": "Voice loop already running"}))
+
+                    elif t == "voice_loop_stop":
+                        self._voice_loop_active = False
+                        await websocket.send(json.dumps({"type": "ack", "message": "Voice loop stopped"}))
+
                     elif t == "ping":
                         await websocket.send(json.dumps({"type": "pong"}))
 
@@ -215,6 +275,53 @@ class SovereignOS:
 
         except websockets.exceptions.ConnectionClosed:
             logger.info("Client disconnected")
+        finally:
+            self._voice_loop_active = False
+
+    async def _voice_loop(self, websocket):
+        """Continuously listen for voice input until voice_loop_stop is sent."""
+        logger.info("Voice loop started")
+        loop = asyncio.get_event_loop()
+        while self._voice_loop_active:
+            # Don't listen while SOVEREIGN is speaking
+            if self.voice.is_speaking:
+                await asyncio.sleep(0.3)
+                continue
+            try:
+                await websocket.send(json.dumps({"type": "orb_state", "state": OrbState.LISTENING.value}))
+                voice_result = await loop.run_in_executor(None, self.voice.listen, 5)
+
+                if not self._voice_loop_active:
+                    break
+
+                transcript = voice_result.transcript.strip() if voice_result.success else ""
+                if len(transcript) < 3:
+                    # Skip noise / silence — stay in loop
+                    continue
+
+                await websocket.send(json.dumps({"type": "voice_transcript", "transcript": transcript}))
+                await websocket.send(json.dumps({"type": "orb_state", "state": OrbState.THINKING.value}))
+
+                resp = await self.process(OrchestratorRequest(
+                    raw_input=transcript,
+                    input_mode="voice"
+                ))
+                await websocket.send(json.dumps({
+                    "type": "response",
+                    "content": resp.text_response,
+                    "orb_state": resp.orb_state.value,
+                    "actions": resp.actions_taken,
+                    "success": resp.success,
+                    "transcript": transcript
+                }))
+
+            except websockets.exceptions.ConnectionClosed:
+                break
+            except Exception as e:
+                logger.error(f"Voice loop error: {e}")
+                await asyncio.sleep(1)
+
+        logger.info("Voice loop stopped")
 
     async def start(self):
         logger.info(f"WebSocket listening on ws://{WS_HOST}:{WS_PORT}")

@@ -1,14 +1,16 @@
 // ui/src/SovereignOrb.tsx
-// The animated amber orb — idle floats, speaking pulses, thinking spins
 
 import { useEffect, useRef, useState, useCallback } from "react";
 
 type OrbState = "idle" | "listening" | "thinking" | "speaking";
+type Role = "friend" | "assistant" | "companion" | "mentor";
+type Style = "empathetic" | "honest" | "hype" | "calm";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  isVoice?: boolean;
 }
 
 const WS_URL = "ws://localhost:8765";
@@ -28,7 +30,6 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
     const cx = W / 2;
     const cy = H / 2;
 
-    // Particle system
     const PARTICLE_COUNT = 180;
     const particles = Array.from({ length: PARTICLE_COUNT }, (_, i) => ({
       angle: (i / PARTICLE_COUNT) * Math.PI * 2,
@@ -37,11 +38,10 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
       speed: 0.002 + Math.random() * 0.004,
       size: 0.5 + Math.random() * 2.5,
       opacity: 0.3 + Math.random() * 0.7,
-      layer: Math.floor(Math.random() * 3), // 0=inner, 1=mid, 2=outer
+      layer: Math.floor(Math.random() * 3),
       drift: Math.random() * Math.PI * 2,
     }));
 
-    // Inner filaments
     const FILAMENT_COUNT = 40;
     const filaments = Array.from({ length: FILAMENT_COUNT }, () => ({
       angle: Math.random() * Math.PI * 2,
@@ -62,7 +62,7 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
           return { scale: 1.05, glow: 1.1, speed: 3.0, brightness: 1.0 };
         case "listening":
           return { scale: 1 + 0.08 * Math.sin(timeRef.current * 4), glow: 1.2, speed: 1.2, brightness: 1.1 };
-        default: // idle
+        default:
           return { scale: 1 + 0.02 * Math.sin(timeRef.current * 0.8), glow: 0.8, speed: 0.6, brightness: 0.85 };
       }
     }
@@ -74,7 +74,6 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
 
       ctx.clearRect(0, 0, W, H);
 
-      // Floating offset
       floatOffset += 0.008 * floatDir;
       if (Math.abs(floatOffset) > 6) floatDir *= -1;
       const orbY = cy + (state === "idle" ? floatOffset : 0);
@@ -83,30 +82,27 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
       ctx.translate(cx, orbY);
       ctx.scale(scale, scale);
 
-      // ── Outer glow ring ──────────────────────────────────────────────────
       const outerGrad = ctx.createRadialGradient(0, 0, 60, 0, 0, 160);
-      outerGrad.addColorStop(0, `rgba(200, 100, 0, ${0.0})`);
+      outerGrad.addColorStop(0, `rgba(200, 100, 0, 0.0)`);
       outerGrad.addColorStop(0.4, `rgba(180, 80, 0, ${0.06 * glow})`);
       outerGrad.addColorStop(0.7, `rgba(160, 60, 0, ${0.12 * glow})`);
-      outerGrad.addColorStop(1, `rgba(100, 30, 0, ${0.0})`);
+      outerGrad.addColorStop(1, `rgba(100, 30, 0, 0.0)`);
       ctx.beginPath();
       ctx.arc(0, 0, 160, 0, Math.PI * 2);
       ctx.fillStyle = outerGrad;
       ctx.fill();
 
-      // ── Core sphere ───────────────────────────────────────────────────────
       const coreGrad = ctx.createRadialGradient(-15, -15, 0, 0, 0, 80);
       coreGrad.addColorStop(0, `rgba(255, 200, 80, ${0.95 * brightness})`);
       coreGrad.addColorStop(0.3, `rgba(220, 120, 20, ${0.9 * brightness})`);
       coreGrad.addColorStop(0.6, `rgba(160, 60, 0, ${0.85 * brightness})`);
       coreGrad.addColorStop(0.85, `rgba(80, 20, 0, ${0.8 * brightness})`);
-      coreGrad.addColorStop(1, `rgba(20, 5, 0, ${0.9})`);
+      coreGrad.addColorStop(1, `rgba(20, 5, 0, 0.9)`);
       ctx.beginPath();
       ctx.arc(0, 0, 80, 0, Math.PI * 2);
       ctx.fillStyle = coreGrad;
       ctx.fill();
 
-      // ── Inner filaments ───────────────────────────────────────────────────
       filaments.forEach((f) => {
         f.angle += f.speed * speed * 0.016;
         const x1 = Math.cos(f.angle) * 10;
@@ -122,28 +118,24 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
         ctx.stroke();
       });
 
-      // ── Particles ─────────────────────────────────────────────────────────
       particles.forEach((p) => {
         p.angle += p.speed * speed;
         p.drift += 0.01;
         const radiusPulse = p.baseRadius + 8 * Math.sin(t * 2 + p.drift);
         const x = Math.cos(p.angle) * radiusPulse;
-        const y = Math.sin(p.angle) * radiusPulse * 0.85; // slight ellipse
-
+        const y = Math.sin(p.angle) * radiusPulse * 0.85;
         const colors = [
-          `rgba(255, 180, 60, `,   // inner — bright gold
-          `rgba(200, 100, 20, `,   // mid — orange
-          `rgba(150, 60, 10, `,    // outer — dark amber
+          `rgba(255, 180, 60, `,
+          `rgba(200, 100, 20, `,
+          `rgba(150, 60, 10, `,
         ];
         const pulse = 0.6 + 0.4 * Math.sin(t * 4 + p.angle * 3);
-
         ctx.beginPath();
         ctx.arc(x, y, p.size, 0, Math.PI * 2);
         ctx.fillStyle = colors[p.layer] + `${p.opacity * pulse * brightness})`;
         ctx.fill();
       });
 
-      // ── HUD ring ─────────────────────────────────────────────────────────
       const ringOpacity = state === "thinking" ? 0.6 : 0.25;
       const ringRotation = state === "thinking" ? t * 1.5 : t * 0.2;
       ctx.save();
@@ -156,7 +148,6 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
       ctx.stroke();
       ctx.restore();
 
-      // Inner ring
       ctx.save();
       ctx.rotate(-ringRotation * 0.7);
       ctx.beginPath();
@@ -170,11 +161,10 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
       ctx.setLineDash([]);
       ctx.restore();
 
-      // ── Corner HUD elements ───────────────────────────────────────────────
       ctx.strokeStyle = "rgba(180, 100, 20, 0.4)";
       ctx.lineWidth = 0.8;
-      const corners = [[20, 20], [W - 20, 20], [20, H - 20], [W - 20, H - 20]];
-      const dirs = [[1, 1], [-1, 1], [1, -1], [-1, -1]];
+      const corners: [number, number][] = [[20, 20], [W - 20, 20], [20, H - 20], [W - 20, H - 20]];
+      const dirs: [number, number][] = [[1, 1], [-1, 1], [1, -1], [-1, -1]];
       corners.forEach(([x, y], i) => {
         const [dx, dy] = dirs[i];
         ctx.beginPath();
@@ -193,6 +183,27 @@ function useOrbCanvas(state: OrbState, canvasRef: React.RefObject<HTMLCanvasElem
 }
 
 
+// ── Shared button style helper ─────────────────────────────────────────────
+
+function orbBtn(active = false, danger = false): React.CSSProperties {
+  return {
+    background: active
+      ? (danger ? "rgba(180,40,10,0.4)" : "rgba(180,100,10,0.35)")
+      : "rgba(180,80,10,0.12)",
+    border: `0.5px solid rgba(180,100,20,${active ? 0.8 : 0.4})`,
+    borderRadius: 6,
+    padding: "8px 14px",
+    color: active ? "#ffb84a" : "#c87830",
+    cursor: "pointer",
+    fontSize: "11px",
+    letterSpacing: "0.1em",
+    fontFamily: "'Courier New', monospace",
+    transition: "all 0.15s",
+    whiteSpace: "nowrap" as const,
+  };
+}
+
+
 // ── Main Component ─────────────────────────────────────────────────────────
 
 export default function SovereignOrb() {
@@ -202,6 +213,11 @@ export default function SovereignOrb() {
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Connecting...");
+  const [voiceLoopActive, setVoiceLoopActive] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [activeRole, setActiveRole] = useState<Role>("friend");
+  const [activeStyle, setActiveStyle] = useState<Style>("empathetic");
+  const [showSettings, setShowSettings] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   useOrbCanvas(orbState, canvasRef as React.RefObject<HTMLCanvasElement>);
@@ -212,38 +228,50 @@ export default function SovereignOrb() {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      setConnected(true);
-      setStatus("Online");
-    };
+    ws.onopen = () => { setConnected(true); setStatus("Online"); };
 
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (data.type === "ready") {
-        setOrbState("idle");
-        setMessages([{ role: "assistant", content: data.message, timestamp: Date.now() }]);
-      } else if (data.type === "orb_state") {
-        setOrbState(data.state as OrbState);
-      } else if (data.type === "response") {
-        setOrbState(data.orb_state as OrbState);
-        setMessages(prev => [...prev, { role: "assistant", content: data.content, timestamp: Date.now() }]);
-        // Return to idle after speaking
-        setTimeout(() => setOrbState("idle"), 3000);
-      } else if (data.type === "error") {
-        setOrbState("idle");
-        setStatus(`Error: ${data.message}`);
+      switch (data.type) {
+        case "ready":
+          setOrbState("idle");
+          setMessages([{ role: "assistant", content: data.message, timestamp: Date.now() }]);
+          break;
+        case "orb_state":
+          setOrbState(data.state as OrbState);
+          if (data.state === "listening") setVoiceListening(true);
+          else setVoiceListening(false);
+          break;
+        case "voice_transcript":
+          setMessages(prev => [...prev, {
+            role: "user", content: data.transcript,
+            timestamp: Date.now(), isVoice: true
+          }]);
+          break;
+        case "response":
+          setOrbState(data.orb_state as OrbState);
+          setMessages(prev => [...prev, { role: "assistant", content: data.content, timestamp: Date.now() }]);
+          setTimeout(() => setOrbState("idle"), 3000);
+          break;
+        case "ack":
+          break;
+        case "error":
+          setOrbState("idle");
+          setVoiceListening(false);
+          setStatus(`Error: ${data.message}`);
+          setTimeout(() => setStatus("Online"), 4000);
+          break;
       }
     };
 
     ws.onclose = () => {
       setConnected(false);
+      setVoiceLoopActive(false);
       setStatus("Reconnecting...");
       setTimeout(connect, 3000);
     };
 
-    ws.onerror = () => {
-      setStatus("Connection failed — is the Python backend running?");
-    };
+    ws.onerror = () => setStatus("Connection failed — is the Python backend running?");
   }, []);
 
   useEffect(() => {
@@ -251,22 +279,60 @@ export default function SovereignOrb() {
     return () => wsRef.current?.close();
   }, [connect]);
 
-  // ── Send Message ─────────────────────────────────────────────────────────
+  const ws = () => wsRef.current;
+  const canSend = connected && ws()?.readyState === WebSocket.OPEN;
+
+  // ── Text send ────────────────────────────────────────────────────────────
 
   const send = useCallback(() => {
-    if (!input.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!input.trim() || !canSend) return;
     const content = input.trim();
     setInput("");
     setMessages(prev => [...prev, { role: "user", content, timestamp: Date.now() }]);
     setOrbState("thinking");
-    wsRef.current.send(JSON.stringify({ type: "message", content, mode: "text" }));
-  }, [input]);
+    ws()!.send(JSON.stringify({ type: "message", content, mode: "text" }));
+  }, [input, canSend]);
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
+  // ── Voice controls ───────────────────────────────────────────────────────
+
+  const voiceListen = useCallback(() => {
+    if (!canSend || voiceLoopActive) return;
+    ws()!.send(JSON.stringify({ type: "voice_listen", duration: 5 }));
+  }, [canSend, voiceLoopActive]);
+
+  const toggleVoiceLoop = useCallback(() => {
+    if (!canSend) return;
+    if (voiceLoopActive) {
+      ws()!.send(JSON.stringify({ type: "voice_loop_stop" }));
+      setVoiceLoopActive(false);
+    } else {
+      ws()!.send(JSON.stringify({ type: "voice_loop_start" }));
+      setVoiceLoopActive(true);
+    }
+  }, [canSend, voiceLoopActive]);
+
+  // ── Role / Style ─────────────────────────────────────────────────────────
+
+  const changeRole = useCallback((role: Role) => {
+    if (!canSend) return;
+    ws()!.send(JSON.stringify({ type: "set_role", role }));
+    setActiveRole(role);
+  }, [canSend]);
+
+  const changeStyle = useCallback((style: Style) => {
+    if (!canSend) return;
+    ws()!.send(JSON.stringify({ type: "set_style", style }));
+    setActiveStyle(style);
+  }, [canSend]);
+
   // ── Render ────────────────────────────────────────────────────────────────
+
+  const ROLES: Role[] = ["friend", "assistant", "companion", "mentor"];
+  const STYLES: Style[] = ["empathetic", "honest", "hype", "calm"];
 
   return (
     <div style={{
@@ -275,6 +341,7 @@ export default function SovereignOrb() {
       color: "#e8a050", fontFamily: "'Courier New', monospace", overflow: "hidden",
       position: "relative"
     }}>
+
       {/* Status bar */}
       <div style={{
         position: "absolute", top: 0, left: 0, right: 0,
@@ -291,20 +358,68 @@ export default function SovereignOrb() {
           }} />
           {status}
         </span>
-        <span style={{ letterSpacing: "0.1em", textTransform: "uppercase" }}>
-          {orbState}
+        <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ opacity: 0.6, textTransform: "uppercase" }}>{orbState}</span>
+          <button
+            onClick={() => setShowSettings(s => !s)}
+            style={{ ...orbBtn(showSettings), padding: "4px 10px", fontSize: "10px" }}
+          >
+            {showSettings ? "CLOSE" : "SETTINGS"}
+          </button>
         </span>
       </div>
 
+      {/* Settings panel */}
+      {showSettings && (
+        <div style={{
+          position: "absolute", top: 44, right: 0, left: 0,
+          background: "rgba(8,4,0,0.97)",
+          borderBottom: "0.5px solid rgba(180,100,20,0.3)",
+          padding: "16px 24px", zIndex: 9, display: "flex",
+          flexDirection: "column", gap: 14,
+        }}>
+          <div>
+            <div style={{ fontSize: "9px", letterSpacing: "0.2em", opacity: 0.5, marginBottom: 8 }}>ROLE</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {ROLES.map(r => (
+                <button key={r} onClick={() => changeRole(r)} style={orbBtn(activeRole === r)}>
+                  {r.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: "9px", letterSpacing: "0.2em", opacity: 0.5, marginBottom: 8 }}>STYLE</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {STYLES.map(s => (
+                <button key={s} onClick={() => changeStyle(s)} style={orbBtn(activeStyle === s)}>
+                  {s.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ fontSize: "10px", opacity: 0.4 }}>
+            Role controls personality. Style controls tone. Both affect response length.
+          </div>
+        </div>
+      )}
+
       {/* Orb */}
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <canvas
-          ref={canvasRef}
-          width={400}
-          height={400}
-          style={{ display: "block" }}
-        />
+        <canvas ref={canvasRef} width={400} height={400} style={{ display: "block" }} />
       </div>
+
+      {/* Listening indicator */}
+      {voiceListening && (
+        <div style={{
+          position: "absolute", top: "50%", left: "50%",
+          transform: "translate(-50%, 120px)",
+          fontSize: "11px", letterSpacing: "0.2em",
+          color: "rgba(255,180,60,0.8)", animation: "pulse 1s infinite"
+        }}>
+          LISTENING...
+        </div>
+      )}
 
       {/* Messages */}
       <div style={{
@@ -322,46 +437,86 @@ export default function SovereignOrb() {
             color: m.role === "assistant" ? "rgba(240,160,60,0.95)" : "rgba(200,120,40,0.8)"
           }}>
             <div style={{ fontSize: "9px", opacity: 0.5, marginBottom: 4, letterSpacing: "0.1em" }}>
-              {m.role === "user" ? "YOU" : "SOVEREIGN"}
+              {m.role === "user" ? (m.isVoice ? "YOU (VOICE)" : "YOU") : "SOVEREIGN"}
             </div>
             {m.content}
           </div>
         ))}
       </div>
 
-      {/* Input */}
+      {/* Input bar */}
       <div style={{
-        width: "100%", maxWidth: 600, padding: "0 24px 28px",
-        display: "flex", gap: 10, alignItems: "center"
+        width: "100%", maxWidth: 640, padding: "0 24px 28px",
+        display: "flex", flexDirection: "column", gap: 10,
       }}>
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder="Speak to SOVEREIGN..."
-          style={{
-            flex: 1, background: "rgba(180,80,10,0.08)",
-            border: "0.5px solid rgba(180,100,20,0.4)",
-            borderRadius: 8, padding: "10px 16px",
-            color: "#e8a050", fontSize: "13px",
-            fontFamily: "'Courier New', monospace",
-            outline: "none"
-          }}
-        />
-        <button
-          onClick={send}
-          disabled={!connected || !input.trim()}
-          style={{
-            background: "rgba(180,80,10,0.2)",
-            border: "0.5px solid rgba(180,100,20,0.5)",
-            borderRadius: 8, padding: "10px 20px",
-            color: "#e8a050", cursor: "pointer",
-            fontSize: "12px", letterSpacing: "0.1em",
-            opacity: connected && input.trim() ? 1 : 0.4
-          }}
-        >
-          SEND
-        </button>
+        {/* Role/style quick bar */}
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
+          {ROLES.map(r => (
+            <button key={r} onClick={() => changeRole(r)}
+              style={{ ...orbBtn(activeRole === r), padding: "4px 10px", fontSize: "10px" }}>
+              {r.toUpperCase()}
+            </button>
+          ))}
+        </div>
+
+        {/* Text input + buttons */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Type or use mic..."
+            style={{
+              flex: 1, background: "rgba(180,80,10,0.08)",
+              border: "0.5px solid rgba(180,100,20,0.4)",
+              borderRadius: 8, padding: "10px 16px",
+              color: "#e8a050", fontSize: "13px",
+              fontFamily: "'Courier New', monospace", outline: "none"
+            }}
+          />
+
+          {/* One-shot mic */}
+          <button
+            onClick={voiceListen}
+            disabled={!canSend || voiceLoopActive || voiceListening}
+            title="Hold to speak (5 sec)"
+            style={{
+              ...orbBtn(voiceListening),
+              padding: "10px 14px",
+              opacity: canSend && !voiceLoopActive ? 1 : 0.35,
+              fontSize: "16px",
+            }}
+          >
+            🎤
+          </button>
+
+          {/* Continuous voice loop */}
+          <button
+            onClick={toggleVoiceLoop}
+            disabled={!canSend}
+            title={voiceLoopActive ? "Stop continuous listening" : "Start continuous listening"}
+            style={{
+              ...orbBtn(voiceLoopActive, voiceLoopActive),
+              padding: "10px 12px",
+              opacity: canSend ? 1 : 0.35,
+              fontSize: "14px",
+            }}
+          >
+            {voiceLoopActive ? "⏹" : "🔁"}
+          </button>
+
+          <button
+            onClick={send}
+            disabled={!canSend || !input.trim()}
+            style={{
+              ...orbBtn(false),
+              padding: "10px 18px",
+              opacity: canSend && input.trim() ? 1 : 0.35,
+            }}
+          >
+            SEND
+          </button>
+        </div>
       </div>
     </div>
   );

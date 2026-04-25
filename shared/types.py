@@ -25,6 +25,7 @@ class AIModel(Enum):
     HAIKU = "claude-haiku-4-5-20251001"
     SONNET = "claude-sonnet-4-6"
     GEMINI = "gemini-2.0-flash"
+    GROQ = "groq-llama"
     LOCAL = "llama3"
 
 class OrbState(Enum):

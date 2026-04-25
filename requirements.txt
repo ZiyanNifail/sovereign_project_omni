@@ -24,8 +24,10 @@ chromadb==0.5.23
 sentence-transformers==3.3.1
 
 # ── Face Recognition ──────────────────────────────────────────────────────────
-# dlib and face-recognition are installed separately by setup.bat
-# (requires MSVC compiler — cannot be pip installed on a clean machine)
+# NOTE: dlib requires MSVC compiler on Windows — run setup.bat for automated install.
+# On Linux/Mac: pip install dlib face-recognition works directly.
+dlib>=19.24.6
+face-recognition>=1.3.0
 
 # ── Browser Automation ────────────────────────────────────────────────────────
 playwright==1.49.0
