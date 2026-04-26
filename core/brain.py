@@ -65,6 +65,18 @@ class Brain:
         else:
             logger.warning("Brain initialized with no AI backend configured!")
 
+    def prewarm(self):
+        """Send a 1-token Groq request to establish HTTPS keep-alive before first user message."""
+        if self.groq:
+            try:
+                self.groq.chat.completions.create(
+                    model=MODEL_CHAT, max_tokens=1,
+                    messages=[{"role": "user", "content": "hi"}]
+                )
+                logger.debug("Groq connection pre-warmed")
+            except Exception as e:
+                logger.debug(f"Brain prewarm skipped: {e}")
+
     # ── Prompt Assembly ───────────────────────────────────────────────────────
 
     def build_system_prompt(self, request: BrainRequest) -> str:

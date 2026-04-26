@@ -25,8 +25,9 @@ Convert the user's instruction into a precise list of computer actions.
 Available actions:
 - navigate: open a URL in the default browser. target = full URL. Use for ALL websites.
 - open: open a desktop application by name (e.g. Notepad, Spotify). NOT for websites.
-- click_text: find text on screen using OCR and click it. target = exact visible text to find.
-              Use for contact names, buttons, menu items, links — anything visible as text on screen.
+- click_text: find text on screen using OCR and single-click it. target = exact visible text.
+              Use for buttons, menu items, links, any visible text element.
+- double_click_text: find text on screen and double-click it. Use to PLAY a song in Spotify or open a file.
 - click: click at exact coordinates. target = "x,y". Only use when you know exact coords.
 - type: type text. value = text. Handles Unicode, emoji, any language safely.
 - hotkey: press key combination. target = e.g. "ctrl+c", "enter", "ctrl+v".
@@ -47,16 +48,25 @@ Examples:
 "send hey to Miera on WhatsApp" → [
   {{"action": "navigate", "target": "https://web.whatsapp.com"}},
   {{"action": "wait", "value": "5"}},
-  {{"action": "click_text", "target": "Search or start new chat"}},
+  {{"action": "click_text", "target": "Search"}},
   {{"action": "type", "value": "Miera"}},
   {{"action": "wait", "value": "2"}},
   {{"action": "click_text", "target": "Miera"}},
-  {{"action": "wait", "value": "1"}},
+  {{"action": "wait", "value": "1.5"}},
+  {{"action": "click_text", "target": "Type a message"}},
   {{"action": "type", "value": "hey"}},
   {{"action": "hotkey", "target": "enter"}}
 ]
 "click the submit button" → [{{"action": "click_text", "target": "Submit"}}]
-"click on the settings icon" → [{{"action": "click_text", "target": "Settings"}}]
+"play Shape of You on Spotify" → [
+  {{"action": "navigate", "target": "https://open.spotify.com"}},
+  {{"action": "wait", "value": "4"}},
+  {{"action": "hotkey", "target": "/"}},
+  {{"action": "type", "value": "Shape of You"}},
+  {{"action": "hotkey", "target": "enter"}},
+  {{"action": "wait", "value": "2"}},
+  {{"action": "double_click_text", "target": "Shape of You"}}
+]
 
 Return ONLY a valid JSON array of steps, no markdown, no explanation.
 
@@ -203,6 +213,16 @@ class Hands:
                     x, y = map(int, step.target.split(","))
                     pyautogui.moveTo(x, y, duration=0.3)
                 logger.debug(f"Moved to: {step.target}")
+
+            elif step.action == "double_click_text":
+                target_text = step.target or step.value or ""
+                coords = self._get_eyes().find_text(target_text)
+                if coords:
+                    pyautogui.doubleClick(coords[0], coords[1])
+                    logger.debug(f"double_click_text: '{target_text}' at {coords}")
+                else:
+                    logger.warning(f"double_click_text: '{target_text}' not found on screen")
+                    return False
 
             elif step.action == "double_click":
                 if step.target and "," in step.target:

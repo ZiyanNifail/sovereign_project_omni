@@ -214,11 +214,18 @@ export default function SovereignOrb() {
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Connecting...");
   const [voiceLoopActive, setVoiceLoopActive] = useState(false);
-  const [voiceListening, setVoiceListening] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
   const [activeRole, setActiveRole] = useState<Role>("friend");
   const [activeStyle, setActiveStyle] = useState<Style>("empathetic");
   const [showSettings, setShowSettings] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const liveTranscriptRef = useRef("");
+  const voiceLoopRef = useRef(false);
+  const canSendRef = useRef(false);
+  const errorCountRef = useRef(0);
+  const errorWindowRef = useRef(0);
 
   useOrbCanvas(orbState, canvasRef as React.RefObject<HTMLCanvasElement>);
 
@@ -228,7 +235,7 @@ export default function SovereignOrb() {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
-    ws.onopen = () => { setConnected(true); setStatus("Online"); };
+    ws.onopen = () => { setConnected(true); setStatus("Online"); canSendRef.current = true; };
 
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
@@ -239,8 +246,6 @@ export default function SovereignOrb() {
           break;
         case "orb_state":
           setOrbState(data.state as OrbState);
-          if (data.state === "listening") setVoiceListening(true);
-          else setVoiceListening(false);
           break;
         case "voice_transcript":
           setMessages(prev => [...prev, {
@@ -257,7 +262,6 @@ export default function SovereignOrb() {
           break;
         case "error":
           setOrbState("idle");
-          setVoiceListening(false);
           setStatus(`Error: ${data.message}`);
           setTimeout(() => setStatus("Online"), 4000);
           break;
@@ -265,8 +269,12 @@ export default function SovereignOrb() {
     };
 
     ws.onclose = () => {
+      canSendRef.current = false;
+      voiceLoopRef.current = false;
       setConnected(false);
       setVoiceLoopActive(false);
+      setIsRecording(false);
+      try { recognitionRef.current?.stop(); } catch (_) { /* ignore */ }
       setStatus("Reconnecting...");
       setTimeout(connect, 3000);
     };
@@ -297,23 +305,98 @@ export default function SovereignOrb() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
-  // ── Voice controls ───────────────────────────────────────────────────────
+  // ── Voice — Web Speech API (real-time live transcription) ───────────────────
 
-  const voiceListen = useCallback(() => {
-    if (!canSend || voiceLoopActive) return;
-    ws()!.send(JSON.stringify({ type: "voice_listen", duration: 5 }));
-  }, [canSend, voiceLoopActive]);
+  const sendTranscript = useCallback((transcript: string) => {
+    if (!transcript.trim() || !canSendRef.current || !wsRef.current) return;
+    setMessages(prev => [...prev, { role: "user", content: transcript, timestamp: Date.now(), isVoice: true }]);
+    setOrbState("thinking");
+    wsRef.current.send(JSON.stringify({ type: "message", content: transcript, mode: "voice" }));
+  }, []);
+
+  const startRecognition = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { setStatus("Voice not supported — use Chrome or Edge"); return; }
+
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = true;  // partial results as you speak
+    rec.continuous = false;
+
+    rec.onstart = () => { setIsRecording(true); setOrbState("listening"); setLiveTranscript(""); liveTranscriptRef.current = ""; };
+
+    rec.onresult = (e: any) => {
+      let interim = "", final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t; else interim += t;
+      }
+      const current = final || interim;
+      setLiveTranscript(current);
+      liveTranscriptRef.current = current;
+    };
+
+    rec.onend = () => {
+      setIsRecording(false);
+      const transcript = liveTranscriptRef.current.trim();
+      setLiveTranscript(""); liveTranscriptRef.current = "";
+      if (transcript) {
+        errorCountRef.current = 0;
+        sendTranscript(transcript);
+      } else {
+        setOrbState("idle");
+      }
+      if (voiceLoopRef.current) {
+        const now = Date.now();
+        if (now - errorWindowRef.current > 10000) {
+          errorCountRef.current = 0;
+          errorWindowRef.current = now;
+        }
+        if (errorCountRef.current < 4) {
+          setTimeout(() => startRecognition(), 600);
+        } else {
+          setStatus("Mic: too many errors — voice loop paused");
+          voiceLoopRef.current = false;
+          setVoiceLoopActive(false);
+        }
+      }
+    };
+
+    rec.onerror = (e: any) => {
+      errorCountRef.current++;
+      if (e.error === "not-allowed" || e.error === "audio-capture") {
+        setStatus(`Mic blocked: check browser permissions (${e.error})`);
+        voiceLoopRef.current = false;
+        setVoiceLoopActive(false);
+      } else if (e.error !== "no-speech") {
+        setStatus(`Mic error: ${e.error}`);
+      }
+      setIsRecording(false);
+      setLiveTranscript("");
+      setOrbState("idle");
+      // onend fires after onerror — restart logic is handled there
+    };
+
+    recognitionRef.current = rec;
+    rec.start();
+  }, [sendTranscript]);
+
+  const stopRecognition = useCallback(() => {
+    voiceLoopRef.current = false;
+    setVoiceLoopActive(false);
+    recognitionRef.current?.stop();
+    setIsRecording(false); setLiveTranscript(""); setOrbState("idle");
+  }, []);
+
+  const toggleMic = useCallback(() => {
+    if (isRecording) stopRecognition();
+    else { voiceLoopRef.current = false; setVoiceLoopActive(false); startRecognition(); }
+  }, [isRecording, startRecognition, stopRecognition]);
 
   const toggleVoiceLoop = useCallback(() => {
-    if (!canSend) return;
-    if (voiceLoopActive) {
-      ws()!.send(JSON.stringify({ type: "voice_loop_stop" }));
-      setVoiceLoopActive(false);
-    } else {
-      ws()!.send(JSON.stringify({ type: "voice_loop_start" }));
-      setVoiceLoopActive(true);
-    }
-  }, [canSend, voiceLoopActive]);
+    if (voiceLoopActive) stopRecognition();
+    else { voiceLoopRef.current = true; setVoiceLoopActive(true); startRecognition(); }
+  }, [voiceLoopActive, startRecognition, stopRecognition]);
 
   // ── Role / Style ─────────────────────────────────────────────────────────
 
@@ -409,15 +492,16 @@ export default function SovereignOrb() {
         <canvas ref={canvasRef} width={400} height={400} style={{ display: "block" }} />
       </div>
 
-      {/* Listening indicator */}
-      {voiceListening && (
+      {/* Live transcript — appears below orb as you speak */}
+      {(isRecording || liveTranscript) && (
         <div style={{
-          position: "absolute", top: "50%", left: "50%",
-          transform: "translate(-50%, 120px)",
-          fontSize: "11px", letterSpacing: "0.2em",
-          color: "rgba(255,180,60,0.8)", animation: "pulse 1s infinite"
+          position: "absolute", bottom: 160, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(5,2,0,0.88)", border: "0.5px solid rgba(255,160,40,0.5)",
+          borderRadius: 10, padding: "10px 20px", maxWidth: 440, minWidth: 180,
+          textAlign: "center", fontSize: "14px", color: "#ffcc70", letterSpacing: "0.02em",
+          lineHeight: 1.5,
         }}>
-          LISTENING...
+          {liveTranscript || <span style={{ opacity: 0.4 }}>Listening...</span>}
         </div>
       )}
 
@@ -475,19 +559,19 @@ export default function SovereignOrb() {
             }}
           />
 
-          {/* One-shot mic */}
+          {/* One-shot mic — click to start, click again to stop */}
           <button
-            onClick={voiceListen}
-            disabled={!canSend || voiceLoopActive || voiceListening}
-            title="Hold to speak (5 sec)"
+            onClick={toggleMic}
+            disabled={!canSend || voiceLoopActive}
+            title={isRecording ? "Stop recording" : "Click to speak"}
             style={{
-              ...orbBtn(voiceListening),
+              ...orbBtn(isRecording),
               padding: "10px 14px",
               opacity: canSend && !voiceLoopActive ? 1 : 0.35,
               fontSize: "16px",
             }}
           >
-            🎤
+            {isRecording ? "⏹" : "🎤"}
           </button>
 
           {/* Continuous voice loop */}

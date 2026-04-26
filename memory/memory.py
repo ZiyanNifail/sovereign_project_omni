@@ -78,6 +78,13 @@ class Memory:
             except Exception as e:
                 logger.error(f"ChromaDB load failed: {e}")
 
+    def prewarm(self):
+        """Load ChromaDB and SentenceTransformer in background to avoid first-message lag."""
+        self._load_chroma()
+        if self._embedder:
+            self._embedder.encode("warmup")
+            logger.debug("Embedder pre-warmed")
+
     # ── User Profile ──────────────────────────────────────────────────────────
 
     def save_user_profile(self, profile: UserProfile) -> bool:

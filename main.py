@@ -1,6 +1,6 @@
 # main.py — SOVEREIGN OS Orchestrator
 
-import asyncio, json, logging, sys, re
+import asyncio, json, logging, sys, re, threading
 import websockets
 
 from core.brain import Brain
@@ -9,11 +9,12 @@ from vision.eyes import Eyes
 from hands.hands import Hands
 from voice.voice import Voice
 from persona.persona import Persona
+from integrations.web import Integrations
 from shared.types import (
     BrainRequest, ConversationContext, OrchestratorRequest,
     OrchestratorResponse, OrbState, Role, PersonalityStyle
 )
-from shared.config import WS_HOST, WS_PORT, LOG_LEVEL, LOG_FILE, SOVEREIGN_USER_NAME
+from shared.config import WS_HOST, WS_PORT, LOG_LEVEL, LOG_FILE, SOVEREIGN_USER_NAME, MODEL_CHAT
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -32,6 +33,7 @@ class SovereignOS:
         self.hands = Hands()
         self.voice = Voice()
         self.persona = Persona()
+        self.integrations = Integrations()
         self.context = ConversationContext()
         self.user_name = SOVEREIGN_USER_NAME
         cfg = self.persona.load_config(self.user_name)
@@ -39,6 +41,20 @@ class SovereignOS:
         self.active_style = cfg.style
         self._voice_loop_active = False
         logger.info(f"Ready — {self.user_name} | {self.active_role.value} | {self.active_style.value}")
+        threading.Thread(target=self._prewarm, daemon=True).start()
+
+    def _prewarm(self):
+        """Load heavy models in background so first user message is fast."""
+        try:
+            self.memory.prewarm()
+            logger.info("Memory pre-warmed")
+        except Exception as e:
+            logger.warning(f"Memory prewarm failed: {e}")
+        try:
+            self.brain.prewarm()
+            logger.info("Brain pre-warmed")
+        except Exception as e:
+            logger.warning(f"Brain prewarm failed: {e}")
 
     def _intent(self, text: str) -> str:
         t = text.lower()
@@ -64,6 +80,10 @@ class SovereignOS:
 
         if any(w in t for w in ["what do you see", "look at my screen", "read my screen", "what's on my screen", "describe my screen"]):
             return "screen"
+        # WhatsApp SEND — dedicated intent so Playwright handles it (not OCR/hands)
+        if "whatsapp" in t and re.search(r'\b(send|message|text|tell|write|forward|reply)\b', t):
+            return "whatsapp_send"
+        # WhatsApp READ — generic whatsapp mention or "my messages/texts/chat"
         if any(w in t for w in ["whatsapp", "my messages", "my texts", "my chat"]):
             return "whatsapp"
         if any(w in t for w in ["lms", "my assignments", "my deadline", "check my class", "my class schedule"]):
@@ -74,77 +94,107 @@ class SovereignOS:
             return "search"
         if any(w in t for w in ["instagram", "this post", "this ig"]):
             return "instagram"
+        if re.search(r'\b(play|listen to)\b.{0,30}\bspotify\b', t):
+            return "spotify_play"
         return "chat"
+
+    def _extract_whatsapp_params(self, instruction: str) -> tuple:
+        """Use Groq to extract (contact, message) from a natural language WhatsApp send instruction."""
+        try:
+            resp = self.brain.groq.chat.completions.create(
+                model=MODEL_CHAT,
+                messages=[{"role": "user", "content":
+                    f'From this instruction: "{instruction}"\n'
+                    f'Return ONLY JSON: {{"contact": "name", "message": "text to send"}}'
+                }],
+                max_tokens=80,
+            )
+            raw = resp.choices[0].message.content.strip()
+            start, end = raw.find("{"), raw.rfind("}") + 1
+            data = json.loads(raw[start:end])
+            return data.get("contact", "").strip(), data.get("message", "").strip()
+        except Exception as e:
+            logger.error(f"WhatsApp param extraction failed: {e}")
+            return "", ""
 
     async def process(self, req: OrchestratorRequest) -> OrchestratorResponse:
         intent = self._intent(req.raw_input)
         screen_ctx = None
         actions = []
+        short_msg = len(req.raw_input.split()) < 6
 
         try:
-            self.memory.log_message_style(req.raw_input)
-            memory_ctx = self.memory.get_context_string(req.raw_input)
+            await asyncio.to_thread(self.memory.log_message_style, req.raw_input)
+            memory_ctx = "" if short_msg else await asyncio.to_thread(
+                self.memory.get_context_string, req.raw_input
+            )
 
             if intent == "screen" or req.include_screen:
-                r = self.eyes.see(question="What is on this screen right now? Be specific.")
+                r = await asyncio.to_thread(
+                    lambda: self.eyes.see(question="What is on this screen right now? Be specific.")
+                )
                 screen_ctx = r.description or r.raw_text
                 actions.append("read_screen")
 
             elif intent == "control":
-                snap = self.eyes.see()
-                result = self.hands.do(req.raw_input, screen_context=snap.raw_text)
+                snap = await asyncio.to_thread(self.eyes.see)
+                result = await asyncio.to_thread(self.hands.do, req.raw_input, snap.raw_text)
                 actions.append(f"ran_{len(result.steps_executed)}_steps")
                 if result.success:
                     await asyncio.sleep(1.5)
-                    after = self.eyes.see()
+                    after = await asyncio.to_thread(self.eyes.see)
                     screen_ctx = f"Done. Screen now shows: {after.raw_text[:250]}"
                 else:
                     screen_ctx = f"Action failed: {result.error}"
 
+            elif intent == "whatsapp_send":
+                contact, msg = await asyncio.to_thread(self._extract_whatsapp_params, req.raw_input)
+                if contact and msg:
+                    r = await self.integrations.send_whatsapp(contact, msg)
+                    screen_ctx = r.content if r.success else f"WhatsApp send failed: {r.error}"
+                    actions.append("send_whatsapp")
+                else:
+                    screen_ctx = "Could not understand who to message or what to say."
+
             elif intent == "whatsapp":
-                try:
-                    from integrations.web import Integrations
-                    r = Integrations().read_whatsapp()
-                    screen_ctx = r.content if r.success else f"WhatsApp error: {r.error}"
-                    actions.append("read_whatsapp")
-                except Exception as e:
-                    screen_ctx = f"WhatsApp unavailable: {e}"
+                r = await self.integrations.read_whatsapp()
+                screen_ctx = r.content if r.success else f"WhatsApp error: {r.error}"
+                actions.append("read_whatsapp")
 
             elif intent == "lms":
-                try:
-                    from integrations.web import Integrations
-                    r = Integrations().check_lms()
-                    screen_ctx = r.content if r.success else f"LMS error: {r.error}"
-                    actions.append("check_lms")
-                except Exception as e:
-                    screen_ctx = f"LMS unavailable: {e}"
+                r = await self.integrations.check_lms()
+                screen_ctx = r.content if r.success else f"LMS error: {r.error}"
+                actions.append("check_lms")
 
             elif intent == "search":
-                try:
-                    from integrations.web import Integrations
-                    r = Integrations().search_web(req.raw_input)
-                    screen_ctx = r.content if r.success else "Search failed"
-                    actions.append("web_search")
-                except Exception as e:
-                    screen_ctx = f"Search unavailable: {e}"
+                r = await self.integrations.search_web(req.raw_input)
+                screen_ctx = r.content if r.success else "Search failed"
+                actions.append("web_search")
 
             elif intent == "instagram":
                 urls = re.findall(r'https?://\S+instagram\S+', req.raw_input)
-                try:
-                    from integrations.web import Integrations
-                    if urls:
-                        r = Integrations().analyze_instagram(urls[0])
-                        screen_ctx = r.content if r.success else "Could not read post"
-                    else:
-                        snap = self.eyes.see(question="Describe this Instagram post in detail.")
-                        screen_ctx = snap.description or snap.raw_text
-                    actions.append("instagram")
-                except Exception as e:
-                    screen_ctx = f"Instagram unavailable: {e}"
+                if urls:
+                    r = await self.integrations.analyze_instagram(urls[0])
+                    screen_ctx = r.content if r.success else "Could not read post"
+                else:
+                    snap = await asyncio.to_thread(
+                        lambda: self.eyes.see(question="Describe this Instagram post in detail.")
+                    )
+                    screen_ctx = snap.description or snap.raw_text
+                actions.append("instagram")
+
+            elif intent == "spotify_play":
+                query = re.sub(
+                    r'\b(play|listen to|on spotify|spotify)\b', '',
+                    req.raw_input, flags=re.IGNORECASE
+                ).strip() or req.raw_input
+                r = await self.integrations.play_spotify(query)
+                screen_ctx = r.content if r.success else f"Spotify failed: {r.error}"
+                actions.append("play_spotify")
 
             # ── Think ────────────────────────────────────────────────────────
             self.context = self.brain.add_message(self.context, "user", req.raw_input)
-            resp = self.brain.think(BrainRequest(
+            resp = await asyncio.to_thread(self.brain.think, BrainRequest(
                 user_input=req.raw_input,
                 context=self.context,
                 role=self.active_role,
@@ -155,13 +205,18 @@ class SovereignOS:
 
             if resp.success:
                 self.context = self.brain.add_message(self.context, "assistant", resp.text)
-                self.memory.add_memory(
-                    f"User: '{req.raw_input[:80]}' → SOVEREIGN: '{resp.text[:80]}'",
-                    category="conversation"
-                )
+                if not short_msg:
+                    await asyncio.to_thread(
+                        self.memory.add_memory,
+                        f"User: '{req.raw_input[:80]}' → SOVEREIGN: '{resp.text[:80]}'",
+                        "conversation"
+                    )
 
             # ── Speak ────────────────────────────────────────────────────────
-            audio = self.voice.speak(resp.text, block=False) if resp.success else None
+            if resp.success:
+                audio = await asyncio.to_thread(lambda: self.voice.speak(resp.text, block=False))
+            else:
+                audio = None
             if audio:
                 actions.append("spoke")
 
