@@ -59,6 +59,7 @@ class BrainRequest:
     style: PersonalityStyle = PersonalityStyle.EMPATHETIC
     screen_context: Optional[str] = None   # what the AI currently sees
     memory_context: Optional[str] = None   # relevant memories injected
+    user_name: str = "User"
 
 @dataclass
 class BrainResponse:
@@ -120,6 +121,7 @@ class PersonaConfig:
     style: PersonalityStyle
     user_name: str
     known_faces: Dict[str, str] = field(default_factory=dict)  # path -> name
+    setup_complete: bool = False    # True once the user has explicitly set their name
 
 @dataclass
 class IntegrationResult:

@@ -30,22 +30,34 @@ class Persona:
         try:
             if PERSONA_CONFIG_PATH.exists():
                 data = json.loads(PERSONA_CONFIG_PATH.read_text())
+                saved_name = data.get("user_name", user_name)
+                # Existing configs without the flag count as complete if they have a real name —
+                # this preserves the setup state for users who already onboarded.
+                setup_complete = data.get(
+                    "setup_complete",
+                    bool(saved_name) and saved_name.strip().lower() != "user"
+                )
                 self._config = PersonaConfig(
                     role=Role(data.get("role", "friend")),
                     style=PersonalityStyle(data.get("style", "empathetic")),
-                    user_name=data.get("user_name", user_name),
-                    known_faces=data.get("known_faces", {})
+                    user_name=saved_name,
+                    known_faces=data.get("known_faces", {}),
+                    setup_complete=setup_complete,
                 )
             else:
                 self._config = PersonaConfig(
                     role=Role.FRIEND,
                     style=PersonalityStyle.EMPATHETIC,
-                    user_name=user_name
+                    user_name=user_name,
+                    setup_complete=False,
                 )
                 self.save_config(self._config)
         except Exception as e:
             logger.error(f"load_config failed: {e}")
-            self._config = PersonaConfig(role=Role.FRIEND, style=PersonalityStyle.EMPATHETIC, user_name=user_name)
+            self._config = PersonaConfig(
+                role=Role.FRIEND, style=PersonalityStyle.EMPATHETIC,
+                user_name=user_name, setup_complete=False,
+            )
         return self._config
 
     def save_config(self, config: PersonaConfig):
@@ -55,13 +67,26 @@ class Persona:
                 "role": config.role.value,
                 "style": config.style.value,
                 "user_name": config.user_name,
-                "known_faces": config.known_faces
+                "known_faces": config.known_faces,
+                "setup_complete": config.setup_complete,
             }
             PERSONA_CONFIG_PATH.write_text(json.dumps(data, indent=2))
             self._config = config
             logger.debug("Persona config saved")
         except Exception as e:
             logger.error(f"save_config failed: {e}")
+
+    def set_user_name(self, name: str) -> bool:
+        """Record the user's chosen name and mark onboarding complete."""
+        clean = (name or "").strip()
+        if not clean:
+            return False
+        if self._config:
+            self._config.user_name = clean
+            self._config.setup_complete = True
+            self.save_config(self._config)
+            logger.info(f"User name set to: {clean}")
+        return True
 
     def set_role(self, role: Role):
         if self._config:

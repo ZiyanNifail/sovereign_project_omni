@@ -11,6 +11,7 @@ interface Message {
   content: string;
   timestamp: number;
   isVoice?: boolean;
+  isProactive?: boolean;
 }
 
 const WS_URL = "ws://localhost:8765";
@@ -219,6 +220,12 @@ export default function SovereignOrb() {
   const [activeRole, setActiveRole] = useState<Role>("friend");
   const [activeStyle, setActiveStyle] = useState<Style>("empathetic");
   const [showSettings, setShowSettings] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [proactiveEnabled, setProactiveEnabled] = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [setupName, setSetupName] = useState("");
+  const [setupPrompt, setSetupPrompt] = useState("Hi. I'm SOVEREIGN. What should I call you?");
+  const proactiveFlagRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const recognitionRef = useRef<any>(null);
   const liveTranscriptRef = useRef("");
@@ -240,7 +247,13 @@ export default function SovereignOrb() {
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       switch (data.type) {
+        case "needs_setup":
+          setNeedsSetup(true);
+          setSetupPrompt(data.message || "What should I call you?");
+          setOrbState("idle");
+          break;
         case "ready":
+          setNeedsSetup(false);
           setOrbState("idle");
           setMessages([{ role: "assistant", content: data.message, timestamp: Date.now() }]);
           break;
@@ -254,9 +267,34 @@ export default function SovereignOrb() {
           }]);
           break;
         case "response":
+          setTyping(false);
           setOrbState(data.orb_state as OrbState);
           setMessages(prev => [...prev, { role: "assistant", content: data.content, timestamp: Date.now() }]);
           setTimeout(() => setOrbState("idle"), 3000);
+          break;
+        case "typing":
+          setTyping(true);
+          setOrbState("thinking");
+          break;
+        case "proactive":
+          // Next stream of chunks is an unprompted message
+          proactiveFlagRef.current = true;
+          break;
+        case "response_chunk":
+          setTyping(false);
+          setMessages(prev => [...prev, {
+            role: "assistant",
+            content: data.content,
+            timestamp: Date.now(),
+            isProactive: proactiveFlagRef.current,
+          }]);
+          if (data.is_final) {
+            proactiveFlagRef.current = false;
+            setOrbState((data.orb_state as OrbState) || "idle");
+            setTimeout(() => setOrbState("idle"), 3000);
+          } else {
+            setOrbState("thinking");
+          }
           break;
         case "ack":
           break;
@@ -412,6 +450,25 @@ export default function SovereignOrb() {
     setActiveStyle(style);
   }, [canSend]);
 
+  const toggleProactive = useCallback(() => {
+    if (!canSend) return;
+    const next = !proactiveEnabled;
+    ws()!.send(JSON.stringify({ type: "proactive_toggle", enabled: next }));
+    setProactiveEnabled(next);
+  }, [canSend, proactiveEnabled]);
+
+  const proactiveNow = useCallback(() => {
+    if (!canSend) return;
+    ws()!.send(JSON.stringify({ type: "proactive_now" }));
+  }, [canSend]);
+
+  const submitName = useCallback(() => {
+    const name = setupName.trim();
+    if (!name || !canSend) return;
+    ws()!.send(JSON.stringify({ type: "set_name", name }));
+    setSetupName("");
+  }, [setupName, canSend]);
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   const ROLES: Role[] = ["friend", "assistant", "companion", "mentor"];
@@ -424,6 +481,65 @@ export default function SovereignOrb() {
       color: "#e8a050", fontFamily: "'Courier New', monospace", overflow: "hidden",
       position: "relative"
     }}>
+
+      {/* First-run name setup */}
+      {needsSetup && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 100,
+          background: "rgba(5,2,0,0.97)",
+          display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          gap: 24, padding: "0 32px", textAlign: "center",
+        }}>
+          <div style={{
+            fontSize: "10px", letterSpacing: "0.3em",
+            color: "rgba(200,120,40,0.6)",
+          }}>
+            SOVEREIGN OS · FIRST RUN
+          </div>
+          <div style={{
+            fontSize: "18px", color: "rgba(240,160,60,0.95)",
+            maxWidth: 420, lineHeight: 1.5,
+          }}>
+            {setupPrompt}
+          </div>
+          <input
+            autoFocus
+            value={setupName}
+            onChange={e => setSetupName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") submitName(); }}
+            placeholder="your name"
+            maxLength={40}
+            style={{
+              width: "100%", maxWidth: 320,
+              background: "rgba(180,80,10,0.08)",
+              border: "0.5px solid rgba(180,100,20,0.5)",
+              borderRadius: 8, padding: "12px 18px",
+              color: "#e8a050", fontSize: "15px",
+              fontFamily: "'Courier New', monospace",
+              outline: "none", textAlign: "center",
+              letterSpacing: "0.05em",
+            }}
+          />
+          <button
+            onClick={submitName}
+            disabled={!setupName.trim() || !canSend}
+            style={{
+              ...orbBtn(false),
+              padding: "10px 28px", fontSize: "12px",
+              opacity: setupName.trim() && canSend ? 1 : 0.35,
+            }}
+          >
+            CONTINUE
+          </button>
+          <div style={{
+            fontSize: "10px", opacity: 0.4, maxWidth: 360,
+            lineHeight: 1.5, marginTop: 12,
+          }}>
+            this is what i'll call you. you can change it later in settings.
+          </div>
+        </div>
+      )}
 
       {/* Status bar */}
       <div style={{
@@ -481,6 +597,20 @@ export default function SovereignOrb() {
               ))}
             </div>
           </div>
+          <div>
+            <div style={{ fontSize: "9px", letterSpacing: "0.2em", opacity: 0.5, marginBottom: 8 }}>UNPROMPTED MESSAGES</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={toggleProactive} style={orbBtn(proactiveEnabled)}>
+                {proactiveEnabled ? "ON" : "OFF"}
+              </button>
+              <button onClick={proactiveNow} style={orbBtn(false)} disabled={!canSend}>
+                TRIGGER NOW
+              </button>
+            </div>
+            <div style={{ fontSize: "10px", opacity: 0.4, marginTop: 6 }}>
+              SOVEREIGN reaches out the next time you come back after a long gap (6+ hours) — like a friend who's been thinking about you. Use TRIGGER NOW to demo on demand.
+            </div>
+          </div>
           <div style={{ fontSize: "10px", opacity: 0.4 }}>
             Role controls personality. Style controls tone. Both affect response length.
           </div>
@@ -521,11 +651,41 @@ export default function SovereignOrb() {
             color: m.role === "assistant" ? "rgba(240,160,60,0.95)" : "rgba(200,120,40,0.8)"
           }}>
             <div style={{ fontSize: "9px", opacity: 0.5, marginBottom: 4, letterSpacing: "0.1em" }}>
-              {m.role === "user" ? (m.isVoice ? "YOU (VOICE)" : "YOU") : "SOVEREIGN"}
+              {m.role === "user"
+                ? (m.isVoice ? "YOU (VOICE)" : "YOU")
+                : (m.isProactive ? "SOVEREIGN · UNPROMPTED" : "SOVEREIGN")}
             </div>
             {m.content}
           </div>
         ))}
+        {typing && (
+          <div style={{
+            background: "rgba(100,50,0,0.2)",
+            border: "0.5px solid rgba(180,100,20,0.4)",
+            borderRadius: 8, padding: "8px 12px",
+            display: "inline-flex", alignItems: "center", gap: 4,
+            alignSelf: "flex-start",
+          }}>
+            <span style={{ fontSize: "9px", opacity: 0.5, letterSpacing: "0.1em", marginRight: 6 }}>
+              SOVEREIGN
+            </span>
+            <span style={{
+              width: 5, height: 5, borderRadius: "50%",
+              background: "rgba(255,180,60,0.9)",
+              animation: "typingDot 1.2s infinite",
+            }} />
+            <span style={{
+              width: 5, height: 5, borderRadius: "50%",
+              background: "rgba(255,180,60,0.9)",
+              animation: "typingDot 1.2s infinite 0.2s",
+            }} />
+            <span style={{
+              width: 5, height: 5, borderRadius: "50%",
+              background: "rgba(255,180,60,0.9)",
+              animation: "typingDot 1.2s infinite 0.4s",
+            }} />
+          </div>
+        )}
       </div>
 
       {/* Input bar */}
