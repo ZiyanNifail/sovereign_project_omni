@@ -14,7 +14,7 @@ from shared.types import (
     BrainRequest, ConversationContext, OrchestratorRequest,
     OrchestratorResponse, OrbState, Role, PersonalityStyle
 )
-from shared.config import WS_HOST, WS_PORT, LOG_LEVEL, LOG_FILE, SOVEREIGN_USER_NAME, MODEL_CHAT, DATA_DIR
+from shared.config import WS_HOST, WS_PORT, LOG_LEVEL, LOG_FILE, SOVEREIGN_USER_NAME, MODEL_CHAT, DATA_DIR, BASE_DIR
 
 # How many hours of absence count as "long gap" — only then will SOVEREIGN reach out unprompted.
 PROACTIVE_GAP_HOURS = 6
@@ -42,6 +42,9 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)]
 )
+# Suppress noisy HuggingFace/httpx probe requests (harmless 404s for optional model files)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logger = logging.getLogger("sovereign")
 
 
@@ -110,6 +113,7 @@ class SovereignOS:
         self.active_role = cfg.role
         self.active_style = cfg.style
         self._voice_loop_active = False
+        self._greeted = False   # speak greeting only on the first client connection
         logger.info(f"Ready — {self.user_name} | {self.active_role.value} | {self.active_style.value}")
         threading.Thread(target=self._prewarm, daemon=True).start()
 
@@ -126,8 +130,61 @@ class SovereignOS:
         except Exception as e:
             logger.warning(f"Brain prewarm failed: {e}")
 
+    async def _describe_timetable(self, target_day: str = None) -> tuple[str, str | None]:
+        """OCR the timetable image then ask Groq to extract the schedule for a given day."""
+        import base64, io, os
+        from datetime import datetime, timedelta
+        import pytesseract
+        from PIL import Image as _PIL
+        from shared.config import TESSERACT_PATH
+
+        timetable_path = BASE_DIR / "images" / "Timetable.jpg"
+        if not timetable_path.exists():
+            return "I couldn't find your timetable image in the images folder.", None
+
+        with open(timetable_path, "rb") as f:
+            img_bytes = f.read()
+        data_url = f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode()}"
+
+        if target_day is None:
+            target_day = (datetime.now() + timedelta(days=1)).strftime("%A")
+
+        def _ocr_then_parse():
+            if TESSERACT_PATH and os.path.exists(TESSERACT_PATH):
+                pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+            raw_text = pytesseract.image_to_string(_PIL.open(io.BytesIO(img_bytes)), lang="eng")
+            resp = self.brain.groq.chat.completions.create(
+                model=MODEL_CHAT,
+                max_tokens=300,
+                messages=[{"role": "user", "content": (
+                    f"Here is OCR text from a university timetable:\n\n{raw_text}\n\n"
+                    f"List all classes for {target_day} with their times and subject names. "
+                    f"Bullet points, be concise. If none, say so."
+                )}],
+            )
+            return resp.choices[0].message.content
+
+        try:
+            description = await asyncio.to_thread(_ocr_then_parse)
+        except Exception as e:
+            logger.error(f"Timetable read failed: {e}")
+            description = f"Here's your timetable (couldn't parse {target_day} — see image above)."
+
+        return description, data_url
+
     def _intent(self, text: str) -> str:
         t = text.lower()
+
+        # Timetable queries — show image + vision-read schedule
+        if any(w in t for w in ["timetable", "my timetable", "class tomorrow", "classes tomorrow",
+                                 "class today", "classes today", "what class do i have",
+                                 "what classes do i have", "show my schedule", "show timetable"]):
+            return "timetable"
+
+        # LMS check comes first so "open eklas" / "check eklas" don't fall into control
+        if any(w in t for w in ["eklas", "lms", "learning system", "my assignments",
+                                 "my deadline", "check my class", "my class schedule"]):
+            return "lms"
 
         # Explicit computer-control phrases
         control_exact = [
@@ -156,15 +213,19 @@ class SovereignOS:
         # WhatsApp READ — generic whatsapp mention or "my messages/texts/chat"
         if any(w in t for w in ["whatsapp", "my messages", "my texts", "my chat"]):
             return "whatsapp"
-        if any(w in t for w in ["lms", "my assignments", "my deadline", "check my class", "my class schedule"]):
-            return "lms"
+        # (lms handled at top of function)
         if any(w in t for w in ["search for", "look up", "google this", "search the web", "find online"]):
             return "search"
         if re.search(r'\bwhat (is|are|was|were)\b', t) and any(w in t for w in ["search", "look up", "find"]):
             return "search"
         if any(w in t for w in ["instagram", "this post", "this ig"]):
             return "instagram"
-        if re.search(r'\b(play|listen to)\b.{0,30}\bspotify\b', t):
+        # Spotify — catches "play X on Spotify", "play X" (song/music context), "listen to X"
+        if re.search(r'\b(play|listen to)\b', t) and any(
+            w in t for w in ["spotify", "song", "music", "playlist", "album", "artist", "track"]
+        ):
+            return "spotify_play"
+        if re.search(r'\b(play|listen to)\b.{0,40}\bspotify\b', t):
             return "spotify_play"
         return "chat"
 
@@ -186,6 +247,24 @@ class SovereignOS:
         except Exception as e:
             logger.error(f"WhatsApp param extraction failed: {e}")
             return "", ""
+
+    def _extract_whatsapp_contact(self, instruction: str) -> str:
+        """Extract the contact name from a WhatsApp read instruction. Returns '' if none specified."""
+        try:
+            resp = self.brain.groq.chat.completions.create(
+                model=MODEL_CHAT,
+                messages=[{"role": "user", "content":
+                    f'From: "{instruction}"\n'
+                    f'Extract the WhatsApp contact name to look up. '
+                    f'Return ONLY the name (e.g. "Fatiha"), or empty string if no specific contact.'
+                }],
+                max_tokens=20,
+            )
+            name = resp.choices[0].message.content.strip().strip('"\'')
+            return "" if name.lower() in ("none", "empty", "no contact", "no specific contact", "") else name
+        except Exception as e:
+            logger.error(f"WhatsApp contact extraction failed: {e}")
+            return ""
 
     async def process(self, req: OrchestratorRequest) -> OrchestratorResponse:
         intent = self._intent(req.raw_input)
@@ -219,21 +298,69 @@ class SovereignOS:
 
             elif intent == "whatsapp_send":
                 contact, msg = await asyncio.to_thread(self._extract_whatsapp_params, req.raw_input)
-                if contact and msg:
-                    r = await self.integrations.send_whatsapp(contact, msg)
-                    screen_ctx = r.content if r.success else f"WhatsApp send failed: {r.error}"
-                    actions.append("send_whatsapp")
-                else:
-                    screen_ctx = "Could not understand who to message or what to say."
+                if not contact or not msg:
+                    return OrchestratorResponse(
+                        text_response="I couldn't figure out who to message or what to say. Try: \"send [message] to [name] on WhatsApp\".",
+                        orb_state=OrbState.IDLE, success=False
+                    )
+                r = await self.integrations.send_whatsapp(contact, msg)
+                if not r.success:
+                    return OrchestratorResponse(
+                        text_response=f"Couldn't send the message to {contact}: {r.error or 'WhatsApp failed to respond'}",
+                        orb_state=OrbState.IDLE, success=False, error=r.error
+                    )
+                screen_ctx = f"WhatsApp message successfully sent to {contact}: \"{msg}\""
+                actions.append("send_whatsapp")
 
             elif intent == "whatsapp":
-                r = await self.integrations.read_whatsapp()
-                screen_ctx = r.content if r.success else f"WhatsApp error: {r.error}"
+                contact = await asyncio.to_thread(self._extract_whatsapp_contact, req.raw_input)
+                r = await self.integrations.read_whatsapp(contact=contact or None)
+                if not r.success:
+                    return OrchestratorResponse(
+                        text_response=f"I couldn't open WhatsApp: {r.error or 'no messages found'}. Make sure WhatsApp Web is set up (scan the QR code the first time).",
+                        orb_state=OrbState.IDLE, success=False, error=r.error
+                    )
+                # Prefix forces the brain to report what's actually there, never hallucinate
+                screen_ctx = (
+                    "ACTUAL WhatsApp messages just retrieved — report these word for word. "
+                    "DO NOT invent, paraphrase, or add any messages not shown here:\n\n"
+                    + r.content
+                )
                 actions.append("read_whatsapp")
+
+            elif intent == "timetable":
+                from datetime import datetime, timedelta
+                target_day = (datetime.now() + timedelta(days=1)).strftime("%A")
+                # Check for "today" keywords
+                t_lower = req.raw_input.lower()
+                if any(w in t_lower for w in ["today", "right now", "this morning", "this afternoon"]):
+                    target_day = datetime.now().strftime("%A")
+                description, img_data = await self._describe_timetable(target_day)
+                return OrchestratorResponse(
+                    text_response=description,
+                    image_data=img_data,
+                    orb_state=OrbState.IDLE,
+                    actions_taken=["timetable"],
+                    success=True,
+                )
 
             elif intent == "lms":
                 r = await self.integrations.check_lms()
-                screen_ctx = r.content if r.success else f"LMS error: {r.error}"
+                if not r.success:
+                    return OrchestratorResponse(
+                        text_response=f"Couldn't load Eklas: {r.error or 'unknown error'}",
+                        orb_state=OrbState.IDLE, success=False, error=r.error
+                    )
+                # Also append tomorrow's timetable so the brain can mention upcoming classes
+                from datetime import datetime, timedelta
+                tomorrow_day = (datetime.now() + timedelta(days=1)).strftime("%A")
+                tt_desc, _ = await self._describe_timetable(tomorrow_day)
+                screen_ctx = (
+                    "ACTUAL content retrieved from Eklas LMS — summarise what's relevant "
+                    "(assignments, deadlines, announcements, schedule). Report only what is shown:\n\n"
+                    + r.content
+                    + f"\n\n--- TOMORROW ({tomorrow_day}) FROM TIMETABLE ---\n{tt_desc}"
+                )
                 actions.append("check_lms")
 
             elif intent == "search":
@@ -412,6 +539,8 @@ class SovereignOS:
             }
             if transcript is not None:
                 payload["transcript"] = transcript
+            if resp.image_data:
+                payload["image_data"] = resp.image_data
             await websocket.send(json.dumps(payload))
             return
 
@@ -445,6 +574,8 @@ class SovereignOS:
                 payload["success"] = resp.success
                 if transcript is not None:
                     payload["transcript"] = transcript
+                if resp.image_data:
+                    payload["image_data"] = resp.image_data
             await websocket.send(json.dumps(payload))
             # Small breath between chunks (not after the last one)
             if not is_final:
@@ -475,8 +606,19 @@ class SovereignOS:
         else:
             await websocket.send(json.dumps({
                 "type": "ready", "orb_state": OrbState.IDLE.value,
-                "message": f"SOVEREIGN OS online. Hello, {self.user_name}."
+                "message": "SOVEREIGN OS online.",
             }))
+            # Speak the greeting once per session, right as the UI connects.
+            if not self._greeted:
+                self._greeted = True
+                greeting = "Hello, sir."
+                audio = await asyncio.to_thread(lambda: self.voice.speak(greeting, block=False))
+                await websocket.send(json.dumps({
+                    "type": "response_chunk",
+                    "content": greeting,
+                    "is_final": True,
+                    "orb_state": OrbState.SPEAKING.value if audio else OrbState.IDLE.value,
+                }))
         try:
             async for raw in websocket:
                 try:

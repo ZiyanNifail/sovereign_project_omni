@@ -22,18 +22,13 @@ for d in [DATA_DIR, CHROMA_DIR, VOICE_MODELS_DIR, FACES_DIR, SCREENSHOTS_DIR, AU
     d.mkdir(parents=True, exist_ok=True)
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # ── User ──────────────────────────────────────────────────────────────────────
 SOVEREIGN_USER_NAME = os.getenv("SOVEREIGN_USER_NAME", "User")
 
 # ── AI Models ─────────────────────────────────────────────────────────────────
-MODEL_CHAT = "llama-3.3-70b-versatile"         # Groq primary
-MODEL_COMPLEX = "llama-3.3-70b-versatile"     # vision, planning, complex reasoning
-MODEL_GEMINI = "gemini-2.5-flash"              # fallback
-MODEL_LOCAL = "llama3.1:8b"                    # offline fallback via Ollama
+MODEL_CHAT = "llama-3.3-70b-versatile"         # Groq — all AI tasks
 
 # Token limits
 MAX_CONTEXT_TOKENS = 4000       # trim history above this

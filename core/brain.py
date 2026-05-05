@@ -4,16 +4,13 @@
 import logging
 from typing import Optional
 from groq import Groq
-from google import genai
-from google.genai import types as genai_types
 
 from shared.types import (
     BrainRequest, BrainResponse, ConversationContext,
     Message, AIModel, Role, PersonalityStyle
 )
 from shared.config import (
-    ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY,
-    MODEL_CHAT, MODEL_GEMINI,
+    GROQ_API_KEY, MODEL_CHAT,
     MAX_CONTEXT_TOKENS, MAX_OUTPUT_TOKENS, CONTEXT_SUMMARY_THRESHOLD
 )
 
@@ -69,13 +66,10 @@ Current date and time: {datetime}
 class Brain:
     def __init__(self):
         self.groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-        self.gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
         if self.groq:
-            logger.info(f"Brain initialized — primary: Groq ({MODEL_CHAT})")
-        elif self.gemini:
-            logger.info(f"Brain initialized — primary: Gemini ({MODEL_GEMINI})")
+            logger.info(f"Brain initialized — Groq ({MODEL_CHAT})")
         else:
-            logger.warning("Brain initialized with no AI backend configured!")
+            logger.warning("Brain initialized with no API key configured!")
 
     def prewarm(self):
         """Send a 1-token Groq request to establish HTTPS keep-alive before first user message."""
@@ -131,25 +125,19 @@ class Brain:
     # ── Inference ─────────────────────────────────────────────────────────────
 
     def think(self, request: BrainRequest) -> BrainResponse:
-        system_prompt = self.build_system_prompt(request)
-        # Groq first, Gemini as fallback
-        if self.groq:
-            try:
-                return self._call_groq(request, system_prompt)
-            except Exception as e:
-                logger.warning(f"Groq failed, falling back to Gemini: {e}")
-        if self.gemini:
-            try:
-                return self._call_gemini(request, system_prompt)
-            except Exception as e:
-                logger.error(f"Gemini fallback also failed: {e}")
-        return BrainResponse(
-            text="I'm having trouble reaching any AI backend right now. Please check your API keys.",
-            model_used=AIModel.GEMINI,
-            tokens_used=0,
-            success=False,
-            error="All backends failed",
-        )
+        if not self.groq:
+            return BrainResponse(
+                text="No API key configured. Please set GROQ_API_KEY in your .env file.",
+                model_used=AIModel.GROQ, tokens_used=0, success=False, error="No backend"
+            )
+        try:
+            return self._call_groq(request, self.build_system_prompt(request))
+        except Exception as e:
+            logger.error(f"Groq call failed: {e}")
+            return BrainResponse(
+                text="I'm having trouble reaching Groq right now. Please check your API key.",
+                model_used=AIModel.GROQ, tokens_used=0, success=False, error=str(e)
+            )
 
     def _call_groq(self, request: BrainRequest, system: str) -> BrainResponse:
         messages = [{"role": "system", "content": system}]
@@ -168,20 +156,6 @@ class Brain:
         tokens = response.usage.total_tokens
         logger.debug(f"Groq used {tokens} tokens")
         return BrainResponse(text=text, model_used=AIModel.GROQ, tokens_used=tokens, success=True)
-
-    def _call_gemini(self, request: BrainRequest, system: str) -> BrainResponse:
-        history = "\n".join([f"{m.role}: {m.content}" for m in request.context.messages[-6:]])
-        prompt = f"{system}\n\nConversation:\n{history}\nuser: {request.user_input}\nassistant:"
-        response = self.gemini.models.generate_content(
-            model=MODEL_GEMINI,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-            ),
-        )
-        text = response.text
-        return BrainResponse(text=text, model_used=AIModel.GEMINI, tokens_used=0, success=True)
 
 
 # ── Standalone test ───────────────────────────────────────────────────────────

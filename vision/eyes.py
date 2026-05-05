@@ -1,22 +1,20 @@
 # vision/eyes.py
-# Module 4: Eyes — screenshot + OCR + vision AI fallback
+# Module 4: Eyes — screenshot + OCR (no external vision API required)
 
 import logging
-import base64
+import os
 from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
 
-import os
 import pyautogui
 import pytesseract
 from PIL import Image
-import anthropic
 
 from shared.types import ScreenResult
 from shared.config import (
     SCREENSHOTS_DIR, SCREENSHOT_FORMAT, OCR_LANGUAGE,
-    VISION_FALLBACK_THRESHOLD, ANTHROPIC_API_KEY, MODEL_COMPLEX, TESSERACT_PATH
+    VISION_FALLBACK_THRESHOLD, TESSERACT_PATH
 )
 
 if TESSERACT_PATH and os.path.exists(TESSERACT_PATH):
@@ -27,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 class Eyes:
     def __init__(self):
-        self.claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
         pyautogui.FAILSAFE = True
         logger.info("Eyes initialized")
 
@@ -67,50 +64,16 @@ class Eyes:
             logger.error(f"OCR failed: {e}")
             return "", 0.0
 
-    # ── Vision AI ─────────────────────────────────────────────────────────────
-
-    def describe_visually(self, image_path: Path, question: str = "What do you see on this screen?") -> str:
-        """Send screenshot to Claude vision when OCR isn't enough."""
-        if not self.claude:
-            return "Vision AI unavailable — no API key."
-        try:
-            with open(image_path, "rb") as f:
-                img_data = base64.standard_b64encode(f.read()).decode("utf-8")
-            response = self.claude.messages.create(
-                model=MODEL_COMPLEX,
-                max_tokens=1024,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_data}},
-                        {"type": "text", "text": question}
-                    ]
-                }]
-            )
-            return response.content[0].text
-        except Exception as e:
-            logger.error(f"Vision AI failed: {e}")
-            return f"Could not analyze screen: {e}"
-
     # ── Main Entry Point ──────────────────────────────────────────────────────
 
     def see(self, region: Optional[Tuple] = None, question: Optional[str] = None) -> ScreenResult:
-        """
-        Full pipeline: capture → OCR → vision AI fallback if needed.
-        Returns a ScreenResult with text and optional visual description.
-        """
+        """Capture screen and run OCR. Returns a ScreenResult with extracted text."""
         path = self.capture(region)
         if not path:
             return ScreenResult(raw_text="", description=None, success=False, error="Screenshot failed")
 
         text, confidence = self.read_text(path)
-        description = None
-
-        # If OCR confidence is low or question requires visual understanding
-        if confidence < VISION_FALLBACK_THRESHOLD or question:
-            q = question or "Describe what is visible on this screen in detail."
-            description = self.describe_visually(path, q)
-            logger.debug("Used vision AI fallback")
+        description = text if question else None
 
         return ScreenResult(
             raw_text=text,
@@ -120,10 +83,8 @@ class Eyes:
         )
 
     def see_and_describe(self) -> str:
-        """Convenience method — returns a single string summary of the screen."""
+        """Convenience method — returns OCR text from the current screen."""
         result = self.see()
-        if result.description:
-            return result.description
         return result.raw_text or "Nothing visible on screen."
 
     # ── Text Locator ──────────────────────────────────────────────────────────
@@ -132,7 +93,6 @@ class Eyes:
         """
         Find text on the live screen using OCR.
         Returns (x, y) screen coordinates of the text centre, or None if not found.
-        Matches are case-insensitive and substring-based (finds 'Miera' inside a line).
         """
         try:
             from collections import defaultdict
@@ -143,7 +103,6 @@ class Eyes:
             search = text.lower().strip()
             n = len(data["text"])
 
-            # Group words into lines by (block, paragraph, line) key
             lines: dict = defaultdict(list)
             for i in range(n):
                 word = data["text"][i].strip()
@@ -177,5 +136,4 @@ if __name__ == "__main__":
     eyes = Eyes()
     result = eyes.see()
     print(f"OCR text (first 200 chars): {result.raw_text[:200]}")
-    print(f"Description: {result.description}")
     print(f"Success: {result.success}")

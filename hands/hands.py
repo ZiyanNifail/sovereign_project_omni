@@ -59,12 +59,8 @@ Examples:
 ]
 "click the submit button" → [{{"action": "click_text", "target": "Submit"}}]
 "play Shape of You on Spotify" → [
-  {{"action": "navigate", "target": "https://open.spotify.com"}},
-  {{"action": "wait", "value": "4"}},
-  {{"action": "hotkey", "target": "/"}},
-  {{"action": "type", "value": "Shape of You"}},
-  {{"action": "hotkey", "target": "enter"}},
-  {{"action": "wait", "value": "2"}},
+  {{"action": "open", "target": "spotify:search:Shape%20of%20You"}},
+  {{"action": "wait", "value": "3.5"}},
   {{"action": "double_click_text", "target": "Shape of You"}}
 ]
 

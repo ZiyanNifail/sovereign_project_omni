@@ -12,6 +12,7 @@ interface Message {
   timestamp: number;
   isVoice?: boolean;
   isProactive?: boolean;
+  imageData?: string;
 }
 
 const WS_URL = "ws://localhost:8765";
@@ -269,7 +270,10 @@ export default function SovereignOrb() {
         case "response":
           setTyping(false);
           setOrbState(data.orb_state as OrbState);
-          setMessages(prev => [...prev, { role: "assistant", content: data.content, timestamp: Date.now() }]);
+          setMessages(prev => [...prev, {
+            role: "assistant", content: data.content, timestamp: Date.now(),
+            imageData: data.image_data,
+          }]);
           setTimeout(() => setOrbState("idle"), 3000);
           break;
         case "typing":
@@ -287,6 +291,7 @@ export default function SovereignOrb() {
             content: data.content,
             timestamp: Date.now(),
             isProactive: proactiveFlagRef.current,
+            imageData: data.is_final ? data.image_data : undefined,
           }]);
           if (data.is_final) {
             proactiveFlagRef.current = false;
@@ -655,6 +660,13 @@ export default function SovereignOrb() {
                 ? (m.isVoice ? "YOU (VOICE)" : "YOU")
                 : (m.isProactive ? "SOVEREIGN · UNPROMPTED" : "SOVEREIGN")}
             </div>
+            {m.imageData && (
+              <img
+                src={m.imageData}
+                alt="timetable"
+                style={{ width: "100%", borderRadius: 6, marginBottom: 6, display: "block" }}
+              />
+            )}
             {m.content}
           </div>
         ))}
